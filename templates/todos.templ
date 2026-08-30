@@ -1,0 +1,84 @@
+package templates
+
+import "go-htmx-todo/internal/todo"
+
+// Page is FULL page. Only page handler uses it.
+templ Page(vm todo.PageVM) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>Todos - minimal</title>
+			<script src="https://unpkg.com/htmx.org@1.9.12"></script>
+			<style>
+				body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+				#todo-list { list-style: none; padding: 0; }
+				#todo-list li { display: flex; gap: 0.5rem; padding: 0.5rem; border-bottom: 1px solid #eee; align-items: center; }
+				.done { text-decoration: line-through; opacity: 0.6; }
+				form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+				input { flex: 1; padding: 0.5rem; }
+			</style>
+		</head>
+		<body>
+			<h1>todos</h1>
+			<form hx-post="/todos" hx-target="#todo-list" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.reset()">
+				<input name="title" placeholder="What needs to be done?" required autocomplete="off"/>
+				<button type="submit">Add</button>
+			</form>
+			@List(todo.ListVM{Todos: vm.Todos})
+			<p style="color:#888; font-size:0.9rem;">Full page via GET /. Fragments via POST/DELETE /todos (handler builds VM).</p>
+		</body>
+	</html>
+}
+
+// List is FRAGMENT. Mutation handlers return this, htmx swaps #todo-list.
+templ List(vm todo.ListVM) {
+	<ul id="todo-list">
+		for _, t := range vm.Todos {
+			@Item(t)
+		}
+		if len(vm.Todos) == 0 {
+			<li style="color:#888;">no todos yet — add one above</li>
+		}
+	</ul>
+}
+
+// List helper that takes slice directly for Page convenience
+templ ListFromSlice(todos []todo.Todo) {
+	<ul id="todo-list">
+		for _, t := range todos {
+			@Item(t)
+		}
+		if len(todos) == 0 {
+			<li style="color:#888;">no todos yet — add one above</li>
+		}
+	</ul>
+}
+
+templ Item(t todo.Todo) {
+	<li>
+		<button
+			hx-post={ "/todos/" + t.ID + "/toggle" }
+			hx-target="#todo-list"
+			hx-swap="innerHTML"
+			class={ templ.KV("done", t.Done) }
+		>
+			if t.Done {
+				✓
+			} else {
+				○
+			}
+			{ t.Title }
+		</button>
+		<span style="flex:1"></span>
+		<button
+			hx-delete={ "/todos/" + t.ID }
+			hx-target="#todo-list"
+			hx-swap="innerHTML"
+			style="color:#c00;"
+		>
+			delete
+		</button>
+	</li>
+}
