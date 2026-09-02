@@ -1,8 +1,7 @@
 # Go + HTMX + templ reference
 
 Small server-rendered HTMX app using `net/http`, `templ`, `sqlc`, PostgreSQL,
-and `log/slog`. No handwritten repository wrapper and no per-domain query
-interfaces. `sqlc` is the database layer.
+and `log/slog`. Serves as reference.
 
 ## Run
 
@@ -52,26 +51,6 @@ HTTP handler → todo.Service → sqlc.Queries → PostgreSQL
       └──── templ VM ┘
 ```
 
-## Why No Repository Wrapper?
-
-sqlc already generates typed methods:
-
-```go
-queries.GetTodo(ctx, id)
-queries.CreateTodo(ctx, title)
-queries.UpdateTodo(ctx, params)
-queries.DeleteTodo(ctx, id)
-```
-
-A handwritten method that only calls the generated method adds a redundant
-layer. Services use concrete `*db.Queries` directly. If another domain is
-added, it can receive the same shared `*db.Queries` instance.
-
-This reference also does not maintain local query interfaces. That is a
-deliberate choice: the important behavior is tested through real PostgreSQL.
-If a future piece of logic becomes complex enough to need isolated testing,
-add a small interface or pure function then, not before.
-
 ## sqlc
 
 Source files:
@@ -96,10 +75,6 @@ Never edit generated files. Change SQL, then run:
 ```bash
 sqlc generate
 ```
-
-`db.Todo` is used directly in this small app. No second persistence model and
-no JSON or DB tags are needed for HTMX. Introduce separate domain types only
-when DB shape and domain shape genuinely differ.
 
 ## Atlas (declarative schema)
 
@@ -143,15 +118,11 @@ atlas schema apply \
 *   plans `CREATE/ALTER TABLE`
 *   applies with `docker://postgres/16/dev` as temp dev DB for validation
 
-No need for 12 files for 6 tables — one `schema.sql` holds all `CREATE TABLE` statements. Atlas diffs it.
-
 If you later want versioned, reviewed SQL in git, switch Atlas to `migrate diff`:
 
 ```bash
 atlas migrate diff add_users --to file://internal/db/schema.sql --dir file://internal/db/migrations --dev-url docker://postgres/16/dev
 ```
-
-This repo stays declarative by default. Add `down` migrations only if you need explicit rollback; Atlas declarative does not require them.
 
 ## Domain Service
 
@@ -222,8 +193,6 @@ POST /todos/{id}/toggle  → List VM → list fragment
 DELETE /todos/{id}       → List VM → list fragment
 ```
 
-There is no `HX-Request` branching. Page and fragment endpoints are separate.
-
 ## Transactions
 
 sqlc generates `Queries.WithTx(tx)`. For a cross-domain operation, start one
@@ -257,8 +226,6 @@ func DeleteUser(ctx context.Context, pool *pgxpool.Pool, userID int64) error {
     })
 }
 ```
-
-No `Factory`, `UnitOfWork`, or universal application orchestrator is required.
 
 ## Testing
 
