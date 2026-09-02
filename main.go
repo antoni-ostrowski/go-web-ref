@@ -1,23 +1,39 @@
 package main
 
 import (
-	"log"
+	"context"
+	"log/slog"
 	"net/http"
+	"os"
 
-	"go-htmx-todo/internal/db"
-	"go-htmx-todo/internal/todo"
+	db "go-htmx-todo/internal/db/sqlc"
 	"go-htmx-todo/internal/todo/handler"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
-	repo := db.New() // GLOBAL single DB repo *db.Repo — shared across all domains
-	svc := todo.NewService(repo)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, nil)))
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		databaseURL = "postgres://postgres:postgres@localhost:5432/todos?sslmode=disable"
+	}
+
+	pool, err := pgxpool.New(context.Background(), databaseURL)
+	if err != nil {
+		slog.Error("create database pool", "error", err)
+		return
+	}
+	defer pool.Close()
+
+	queries := db.New(pool)
 
 	mux := http.NewServeMux()
-	handler.Register(mux, svc) // domain owns routes
+	handler.Register(mux, queries) // domain creates service and owns routes
 
-	log.Println("listening on http://localhost:8080")
+	slog.Info("listening", "address", "http://localhost:8080")
 	if err := http.ListenAndServe(":8080", mux); err != nil {
-		log.Fatal(err)
+		slog.Error("server stopped", "error", err)
 	}
 }

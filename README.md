@@ -1,228 +1,346 @@
-# Go + HTMX + Templ Web app structure reference
+# Go + HTMX + templ reference
 
-Bare-minimum reference for building Go web apps with HTMX **fully decoupled from rendering** — app is self-contained and testable without HTTP or HTML.
+Small server-rendered HTMX app using `net/http`, `templ`, `sqlc`, PostgreSQL,
+and `log/slog`. No handwritten repository wrapper and no per-domain query
+interfaces. `sqlc` is the database layer.
 
-Stack: `net/http` + `templ` + `htmx`. No chi, no ORM, no JS build. In-memory store (swap for Postgres without touching handlers).
+## Run
 
-Run: `templ generate && go run .` → http://localhost:8080
+The app expects PostgreSQL. Default URL:
+`postgres://postgres:postgres@localhost:5432/todos?sslmode=disable`
 
----
+```bash
+# 1. Generate Go code from SQL
+mise run generate      # sqlc generate && templ generate
 
-## Big Idea
+# 2. Apply desired schema (Atlas declarative, no migration files)
+mise run db-apply      # atlas schema apply --to file://internal/db/schema.sql
+# or preview: mise run db-plan
 
-> **Repo (DB) → Service (rules) → Handler (builds VM) → Renderer (templ) → HTML**
-
+# 3. Run
+mise run dev           # go run .
 ```
-Browser --HTTP--> Handler --call--> Service --call--> Repo --data--> DB
-                    | builds VM from domain      | pure validation
-                    v                            v
-                 templ.Page/List(VM)         ValidateTitle()
+
+`DATABASE_URL` is read from env, same default as `main.go`.
+
+## Architecture
+
+```text
+main.go
+  creates pool, generated *sqlc.Queries, and global slog logger
+  calls todo/handler.Register(mux, queries)
+
+todo/handler
+  Register creates todo.Service from *sqlc.Queries
+  handlers parse HTTP and render service-returned VMs
+
+todo/Service
+  owns todo rules and calls generated sqlc methods
+  returns HTMX-oriented ViewModels
+
+sqlc
+  owns SQL, generated DB types, and generated query methods
+
+PostgreSQL
 ```
 
+The dependency flow is intentionally short:
 
-This is **Hexagonal / Ports & Adapters** stripped to vertical slices — `Service + Repo + VM + Renderer`. Stateless Elm-ish.
+```text
+HTTP handler → todo.Service → sqlc.Queries → PostgreSQL
+      ↑              ↓
+      └──── templ VM ┘
+```
 
----
+## Why No Repository Wrapper?
 
-## Layers — what each does, how it connects
-
-### 1. Model — `internal/todo/service.go:8`
+sqlc already generates typed methods:
 
 ```go
-type Todo struct { ID, Title string; Done bool }
+queries.GetTodo(ctx, id)
+queries.CreateTodo(ctx, title)
+queries.UpdateTodo(ctx, params)
+queries.DeleteTodo(ctx, id)
 ```
 
-What a todo *is*. No `json:`, no `htmx`. Everyone imports it, it imports nothing.
+A handwritten method that only calls the generated method adds a redundant
+layer. Services use concrete `*db.Queries` directly. If another domain is
+added, it can receive the same shared `*db.Queries` instance.
 
-### 2. Repo — `internal/db/repo.go:12` (GLOBAL single DB repo, pointer)
+This reference also does not maintain local query interfaces. That is a
+deliberate choice: the important behavior is tested through real PostgreSQL.
+If a future piece of logic becomes complex enough to need isolated testing,
+add a small interface or pure function then, not before.
 
-```go
-// db.Repo is ONE struct for whole app, shared across all domains
-type Repo struct { mu sync.Mutex; todos []todo.Todo; nextID atomic.Int64 }
-func New() *Repo { return &Repo{} }
-func (r *Repo) List(ctx context.Context) ([]todo.Todo, error)
-func (r *Repo) Save(ctx context.Context, t todo.Todo) (todo.Todo, error)
-func (r *Repo) Get(ctx context.Context, id string) (todo.Todo, error)
-// add more domains here: SaveUser, ListProjects... still one Repo
+## sqlc
+
+Source files:
+
+```text
+sqlc.yaml
+internal/db/schema.sql
+internal/db/queries.sql
 ```
 
-**Purpose:** Single place for all DB operations. One `*Repo` instance for whole app, passed to every `Service`. All methods have `*Repo` pointer receiver — only `*Repo` implements interfaces.
+Generated files:
 
-*   **Global & shared:** `main.go` does `repo := db.New()` once, every handler/service shares `*repo`. Safe because `Repo` holds only `pool/mutex` (read-only after `New`), no `currentUserID` field — pass per-request data via `ctx`/args. `*sql.DB`/`*pgxpool.Pool` inside is concurrency-safe.
-*   **Implements domain PORTs:** `todo` defines `type Repository interface{ List/Save/Get... }`, `db.Repo` implements it (`var _ todo.Repository = (*db.Repo)(nil)`). So `db` imports `todo`, `todo` NEVER imports `db` — no cycle. Add `users` later: define `user.Repository` in `internal/user`, same `db.Repo` implements it.
-*   For now in-memory. Swap to Postgres: keep same methods, change bodies to `tx.Query`. No handler/service change.
+```text
+internal/db/sqlc/
+  db.go
+  models.go
+  queries.sql.go
+```
 
-**Connects to:** Called only by `Service`.
+Never edit generated files. Change SQL, then run:
 
-### 3. Service — `internal/todo/service.go:16` (core, pointer)
+```bash
+sqlc generate
+```
+
+`db.Todo` is used directly in this small app. No second persistence model and
+no JSON or DB tags are needed for HTMX. Introduce separate domain types only
+when DB shape and domain shape genuinely differ.
+
+## Atlas (declarative schema)
+
+This repo uses Atlas declarative workflow — closest to Drizzle `push`. No
+`internal/db/migrations/*.sql` files. `internal/db/schema.sql` is the single
+source of truth for both Atlas and sqlc:
+
+```text
+schema.sql ──► Atlas ──► PostgreSQL (schema apply)
+schema.sql ──► sqlc  ──► Go types/queries
+```
+
+`sqlc.yaml` already points at it:
+
+```yaml
+schema: internal/db/schema.sql
+```
+
+**Typical loop:**
+
+```bash
+# edit internal/db/schema.sql (add table/column)
+# edit internal/db/queries.sql if needed
+mise run generate      # sqlc + templ
+mise run db-plan       # preview ALTER TABLE
+mise run db-apply      # apply
+mise run check         # vet + tests
+```
+
+**What Atlas does:**
+
+```bash
+atlas schema apply \
+  --url "$DATABASE_URL" \
+  --to "file://internal/db/schema.sql" \
+  --dev-url "docker://postgres/16/dev" \
+  --auto-approve       # skip prompt, plan still shown in --dry-run
+```
+
+*   compares current DB vs desired `schema.sql`
+*   plans `CREATE/ALTER TABLE`
+*   applies with `docker://postgres/16/dev` as temp dev DB for validation
+
+No need for 12 files for 6 tables — one `schema.sql` holds all `CREATE TABLE` statements. Atlas diffs it.
+
+If you later want versioned, reviewed SQL in git, switch Atlas to `migrate diff`:
+
+```bash
+atlas migrate diff add_users --to file://internal/db/schema.sql --dir file://internal/db/migrations --dev-url docker://postgres/16/dev
+```
+
+This repo stays declarative by default. Add `down` migrations only if you need explicit rollback; Atlas declarative does not require them.
+
+## Domain Service
+
+`internal/todo/service.go` contains:
 
 ```go
-// PORT defined by domain, implemented by global db.Repo
-type Repository interface {
-  List(ctx context.Context) ([]Todo, error)
-  Save(ctx context.Context, t Todo) (Todo, error)
-  Get(ctx context.Context, id string) (Todo, error)
+type Service struct {
+    queries *db.Queries
 }
-type Service struct{ repo Repository } // holds interface, not *db.Repo
-func NewService(repo Repository) *Service { return &Service{repo: repo} }
 
-func ValidateTitle(title string) error // PURE, no repo
+func NewService(queries *db.Queries) *Service
+func (s *Service) List(ctx context.Context) (PageVM, error)
+func (s *Service) Add(ctx context.Context, title string) (ListVM, error)
 ```
 
-**Purpose:** Business rules. Validates via pure `ValidateTitle`, creates domain `Todo`, delegates to `Repository`, returns domain `[]Todo` (not VM).
+Services hold business behavior that is worth naming: validation, ownership,
+authorization, multiple queries, and error decisions. A trivial operation can
+still live there because every domain gets a service in this reference.
 
-*   Imports nothing from `net/http`, `templ`, or `db`.
-*   Holds `Repository` interface — test with `fakeRepo` in `todo_test.go` (avoids import cycle `todo -> db -> todo`), prod with `*db.Repo`.
-*   Pure funcs live same file, they contain pure logic that can be tested separetly without side effects. 
-
-**Connects to:** Called by `Handler`. Returns `[]Todo` to `Handler`.
-
-**Tested by:** `internal/todo/todo_test.go:8` — uses local `fakeRepo` (no `db` import): `repo:=newFakeRepo(); svc:=NewService(repo); svc.Add(ctx,"buy milk")`.
-
-### 4. Handler + ViewModel — `internal/todo/vm.go` and `internal/todo/handler/handler.go`
+Service methods return VMs directly because this project targets HTMX. That
+keeps handlers short:
 
 ```go
-// vm.go — UI-shaped, one per renderer most of the time
-type ListVM struct{ Todos []Todo }
-type PageVM struct{ Todos []Todo }
-
-// handler.go — domain owns its routes
-func Register(mux *http.ServeMux, svc *Service) {
-  mux.HandleFunc("GET /{$}", handlePage(svc))
-  mux.HandleFunc("POST /todos", handleAdd(svc))
-  mux.HandleFunc("POST /todos/{id}/toggle", handleToggle(svc))
-  mux.HandleFunc("DELETE /todos/{id}", handleDelete(svc))
+vm, err := svc.Add(r.Context(), r.FormValue("title"))
+if err != nil {
+    http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+    return
 }
-func handleAdd(svc *Service) http.HandlerFunc {
-  return func(w http.ResponseWriter, r *http.Request){
-    todos, err := svc.Add(r.Context(), r.FormValue("title"))
-    if err != nil { http.Error(w,err.Error(),422); return }
-    vm := ListVM{Todos: todos} // handler builds VM
-    // passes VM for rendering
-    templates.List(vm).Render(r.Context(), w)
-  }
-}
+templates.List(vm).Render(r.Context(), w)
 ```
 
-**Purpose:** Thin glue. handler = wires up service, VM's and rendering.
+If the same operation later serves JSON, a CLI, or another UI, split the
+reusable result from the HTMX VM at that point.
 
-*   `Register` keeps `main.go` as composition root only — `main.go:12` just `repo:=db.New(); svc:=todo.NewService(repo); handler.Register(mux, svc)` (one global `*db.Repo` shared).
-*   Handlers are `func(*Service) http.HandlerFunc` closures capturing deps — no `struct{svc *Service}` needed. Testable via `httptest.NewRequest` + `FakeRepo` if you want, but most bugs already covered by `Service` tests.
-*   `Handler` **builds VM** from domain slice. Why not `Service`? VM is UI-shaped (`CanEdit`, formatted date). Keeping it in handler keeps `Service` reusable for JSON API vs HTMX (different VMs). If VM is just `Todos`, either place works — we choose handler for flexibility.
-
-**Connects to:** `net/http` in, `Service` middle, `templates` out.
-
-### 5. Renderer — `templates/todos.templ`
+Pure rules can remain beside the service:
 
 ```go
-templ Page(vm todo.PageVM) // full <!DOCTYPE html> + @List(todo.ListVM{Todos: vm.Todos})
-templ List(vm todo.ListVM) // fragment <ul id="todo-list">
-templ Item(t todo.Todo)
+func ValidateTitle(title string) error
 ```
 
-Only layer that imports `templ`. Takes VM, renders HTML. No logic.
-`Todo` stays tag-free in `todo` (no `json`/`db` tags) — `db.Repo` holds `[]todo.Todo` directly, no redeclaration. Add tags later only if you add JSON API, not needed for HTMX.
+Do not extract every small check into another package.
 
-**Why handler/register split avoids cycle:** `todo` (service/vm) imports nothing; `db` imports `todo` to implement `todo.Repository`; `templates` imports `todo` for `Todo`/`VM`; `handler` (`internal/todo/handler`) imports `todo`+`templates`. No `todo -> db -> todo` cycle in prod, and tests use local `fakeRepo` to avoid `todo_test -> db -> todo` cycle.
+## Handler Registration
 
----
+`internal/todo/handler/handler.go` owns todo routes:
 
-## Request Flows
-
-**GET / — full page**
-
-```
-GET / → handler.Register → handlePage → svc.List() → repo.List() → []Todo
-→ handler builds PageVM{Todos: todos} → templates.Page(vm).Render → HTML doc
-```
-
-**POST /todos — HTMX fragment**
-
-```
-POST /todos title=buy+milk → handleAdd → svc.Add() → ValidateTitle → repo.Save → repo.List
-→ handler builds ListVM{Todos: todos} → templates.List(vm).Render → <ul id="todo-list">...
-→ htmx swaps innerHTML of #todo-list (form has hx-target="#todo-list" hx-swap="innerHTML")
+```go
+func Register(mux *http.ServeMux, queries *db.Queries) {
+    svc := todo.NewService(queries)
+    mux.HandleFunc("GET /{$}", handlePage(svc))
+    mux.HandleFunc("POST /todos", handleAdd(svc))
+    mux.HandleFunc("POST /todos/{id}/toggle", handleToggle(svc))
+    mux.HandleFunc("DELETE /todos/{id}", handleDelete(svc))
+}
 ```
 
-No `HX-Request` check. Form declares fragment via `hx-target`, server has dedicated fragment endpoint.
+`main.go` creates one `*sqlc.Queries` and passes it to each domain's
+`Register`. Each domain creates its own service and passes that service into
+its handler closures. Handlers do not receive a logger; startup installs the
+global default `slog` logger.
 
----
+Each handler has one job:
 
-## Why VM per renderer?
-
-Not one god `ViewModel`. `ListVM` for `List`, `PageVM` for `Page`, `ItemVM{T Todo; CanEdit bool}` for per-row swap. Handler builds small VM from domain. Today `PageVM{Todos []Todo}` looks redundant vs `[]Todo`, but when you need `Total`, `DoneCount`, `Flash`, VM is the seam without leaking rendering into `Service`.
-
----
-
-## Testing
-
-| Layer | How | Speed |
-|-------|-----|-------|
-| **Repo** | In-memory, no DB | 0ms |
-| **Service + pure funcs** | `go test ./internal/todo -run TestService` | 0ms |
-| **Handler (optional)** | `httptest.NewRequest` + `handler.Register` + fake `Repo` | 1ms |
-| **Renderer** | Golden files or eyeball | 1ms |
-
-Run: `go test ./... -v` — proves app without HTTP/HTML.
-
----
-
-## Folder Structure
-
-```
-root/
-├── go.mod
-├── main.go                          // wiring only: db.New() → todo.NewService → handler.Register
-├── internal/db/
-│   └── repo.go                      // GLOBAL *Repo pointer, mutex, in-memory, implements todo.Repository (+ future domains)
-├── internal/todo/
-│   ├── service.go                   // Todo model (no tags) + Repository PORT + Service{repo Repository} + ValidateTitle pure
-│   ├── vm.go                        // ListVM, PageVM
-│   ├── handler/handler.go           // Register + 4 handlers building VMs
-│   └── todo_test.go                 // fakeRepo (no db import) + pure Service + VM tests
-└── templates/
-    ├── todos.templ                  // Page(PageVM), List(ListVM), Item(Todo)
-    └── todos_templ.go               // generated
+```text
+GET /                    → full Page VM → full document
+POST /todos              → List VM → list fragment
+POST /todos/{id}/toggle  → List VM → list fragment
+DELETE /todos/{id}       → List VM → list fragment
 ```
 
-`internal/` enforces decoupling. Global `db.Repo` is one `*Repo` shared; handler subpackage breaks cycle.
-
----
+There is no `HX-Request` branching. Page and fragment endpoints are separate.
 
 ## Transactions
 
-With GLOBAL `*db.Repo`, add one helper:
+sqlc generates `Queries.WithTx(tx)`. For a cross-domain operation, start one
+transaction, create transaction-bound queries, and call all operations through
+those queries:
 
 ```go
-// internal/db/repo.go (when using real DB)
-func (r *Repo) WithTx(ctx context.Context, fn func(*Repo) error) error {
-  tx, _ := r.pool.Begin(ctx)
-  txRepo := &Repo{pool: tx} // new per-request instance, not shared
-  defer tx.Rollback(ctx)
-  if err := fn(txRepo); err != nil { return err }
-  return tx.Commit(ctx)
+func withTx(ctx context.Context, pool *pgxpool.Pool, fn func(*db.Queries) error) error {
+    tx, err := pool.Begin(ctx)
+    if err != nil {
+        return err
+    }
+    defer tx.Rollback(ctx)
+
+    if err := fn(db.New(pool).WithTx(tx)); err != nil {
+        return err
+    }
+    return tx.Commit(ctx)
 }
 ```
 
-Cross-domain with Tx (when you add `users` to same global Repo):
+Then a named cross-domain operation stays a plain function:
 
 ```go
-repo.WithTx(ctx, func(tx *db.Repo) error {
-  if err := tx.DeleteUser(ctx, id); err != nil { return err }
-  return tx.DeleteTodosByUser(ctx, id)
-})
+func DeleteUser(ctx context.Context, pool *pgxpool.Pool, userID int64) error {
+    return withTx(ctx, pool, func(q *db.Queries) error {
+        if err := q.DeleteTodosByUser(ctx, userID); err != nil {
+            return err
+        }
+        return q.DeleteUser(ctx, userID)
+    })
+}
 ```
 
+No `Factory`, `UnitOfWork`, or universal application orchestrator is required.
 
----
+## Testing
 
+The main reference test is an HTTP integration test against ephemeral real
+PostgreSQL. It uses `httptest`, the real registered handlers, real sqlc
+queries, and real database state. It does not use Playwright.
 
-## Commands
+The test is skipped by default so ordinary `go test ./...` needs no Docker:
 
 ```bash
-templ generate
-go run .                # http://localhost:8080
-go test ./... -v
-go vet ./...            # 0
+go test ./...
+go test -race ./...
+go vet ./...
 ```
 
+Run the PostgreSQL integration test with Docker:
+
+```bash
+INTEGRATION_TESTS=1 go test ./internal/todo/handler -run TestHandlersWithPostgres -v
+```
+
+The integration test verifies:
+
+- route registration and HTTP request parsing
+- service and sqlc wiring
+- real inserts, updates, deletes, and selects
+- PostgreSQL schema compatibility
+- full-page versus fragment responses
+
+Add pure service tests only when a rule becomes sufficiently complex to
+deserve isolation. Add Playwright for browser-specific behavior, such as
+confirming that HTMX performs the expected DOM swap.
+
+Do not use SQLite as a fake PostgreSQL. SQL syntax, constraints, types,
+locking, and transaction behavior differ.
+
+## Folder Structure
+
+```text
+go-htmx-paradim-inspo/
+├── main.go
+├── mise.toml
+├── sqlc.yaml
+├── internal/db/
+│   ├── schema.sql
+│   ├── queries.sql
+│   └── sqlc/                         # generated code
+├── internal/todo/
+│   ├── service.go                    # service + direct *sqlc.Queries
+│   ├── vm.go                         # HTMX VMs
+│   └── handler/
+│       ├── handler.go                # Register + handlers
+│       └── handler_integration_test.go
+└── templates/
+    ├── todos.templ
+    └── todos_templ.go                # generated
+```
+
+When adding another domain, add another vertical slice:
+
+```text
+internal/user/service.go
+internal/user/vm.go
+internal/user/handler/handler.go
+```
+
+The user service can receive the same `*db.Queries`. SQL remains centralized
+in `internal/db`, while domain routes and service behavior stay in their own
+slice.
+
+## Mise Tasks
+
+`mise.toml` pins Go, sqlc, templ, and Atlas versions:
+
+```bash
+mise run generate        # sqlc generate && templ generate
+mise run db-plan         # atlas dry-run
+mise run db-apply        # atlas schema apply
+mise run db-validate     # atlas schema validate
+mise run test            # go test ./...
+mise run test-race       # go test -race ./...
+mise run test-integration# integration with real Postgres
+mise run check           # generate + vet + test
+mise run dev             # go run .
+```

@@ -1,0 +1,42 @@
+[tools]
+go = "1.27.0"
+sqlc = "1.30.0"
+"aqua:a-h/templ" = "v0.3.1020"
+"aqua:ariga/atlas" = "latest"
+
+[tasks.generate]
+description = "Generate sqlc and templ code"
+run = "sqlc generate && templ generate"
+
+[tasks.test]
+description = "Run tests"
+run = "go test ./..."
+
+[tasks.test-race]
+description = "Run tests with race detector"
+run = "go test -race ./..."
+
+[tasks.test-integration]
+description = "Run PostgreSQL integration tests"
+run = "INTEGRATION_TESTS=1 go test ./internal/todo/handler -run TestHandlersWithPostgres -v"
+
+[tasks.check]
+description = "Run generators, vet, and tests"
+depends = ["generate"]
+run = "go vet ./... && go test ./..."
+
+[tasks.db-apply]
+description = "Apply desired schema to DATABASE_URL (Atlas declarative)"
+run = "atlas schema apply --url \"${DATABASE_URL:-postgres://postgres:postgres@localhost:5432/todos?sslmode=disable}\" --to \"file://internal/db/schema.sql\" --dev-url \"docker://postgres/16/dev\" --auto-approve"
+
+[tasks.db-plan]
+description = "Show planned schema changes without applying"
+run = "atlas schema apply --url \"${DATABASE_URL:-postgres://postgres:postgres@localhost:5432/todos?sslmode=disable}\" --to \"file://internal/db/schema.sql\" --dev-url \"docker://postgres/16/dev\" --dry-run"
+
+[tasks.db-validate]
+description = "Validate schema"
+run = "atlas schema validate --url \"file://internal/db/schema.sql\" --dev-url \"docker://postgres/16/dev\""
+
+[tasks.dev]
+description = "Run the web app"
+run = "go run ."

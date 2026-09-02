@@ -4,37 +4,19 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	db "go-htmx-todo/internal/db/sqlc"
 )
 
-// Todo is domain model. No HTTP, no HTML.
-type Todo struct {
-	ID    string
-	Title string
-	Done  bool
-}
-
-// Repository is PORT — defined by domain, implemented by global db.Repo.
-// Service depends on interface, not concrete *db.Repo, so tests can pass any fake.
-type Repository interface {
-	List(ctx context.Context) ([]Todo, error)
-	Save(ctx context.Context, t Todo) (Todo, error)
-	Get(ctx context.Context, id string) (Todo, error)
-	Update(ctx context.Context, t Todo) error
-	Delete(ctx context.Context, id string) error
-}
-
-// Service holds business rules. Pointer, holds Repository interface.
-// No net/http, no templ — pure Go, testable with fake Repo.
+// Service holds todo rules and generated sqlc queries. It is HTMX-oriented:
+// methods return the ViewModel that the corresponding component renders.
 type Service struct {
-	repo Repository
+	queries *db.Queries
 }
 
-func NewService(repo Repository) *Service {
-	return &Service{repo: repo}
+func NewService(queries *db.Queries) *Service {
+	return &Service{queries: queries}
 }
-
-// Pure funcs — isolated logic, test without DB/repo.
-// Handler or Service can call them. No side effects.
 
 func ValidateTitle(title string) error {
 	if strings.TrimSpace(title) == "" {
@@ -43,40 +25,51 @@ func ValidateTitle(title string) error {
 	return nil
 }
 
-// List returns domain data, not VM. Handler builds VM.
-func (s *Service) List(ctx context.Context) ([]Todo, error) {
-	return s.repo.List(ctx)
-}
-
-// Add validates, creates domain object, persists, returns fresh list.
-func (s *Service) Add(ctx context.Context, title string) ([]Todo, error) {
-	if err := ValidateTitle(title); err != nil {
-		return nil, err
-	}
-	t := Todo{Title: strings.TrimSpace(title)}
-	if _, err := s.repo.Save(ctx, t); err != nil {
-		return nil, fmt.Errorf("save todo: %w", err)
-	}
-	return s.repo.List(ctx)
-}
-
-// Toggle flips Done. Returns fresh list.
-func (s *Service) Toggle(ctx context.Context, id string) ([]Todo, error) {
-	t, err := s.repo.Get(ctx, id)
+func (s *Service) List(ctx context.Context) (PageVM, error) {
+	todos, err := s.queries.ListTodos(ctx)
 	if err != nil {
-		return nil, err
+		return PageVM{}, fmt.Errorf("list todos: %w", err)
+	}
+	return PageVM{Todos: todos}, nil
+}
+
+func (s *Service) Add(ctx context.Context, title string) (ListVM, error) {
+	if err := ValidateTitle(title); err != nil {
+		return ListVM{}, err
+	}
+	if _, err := s.queries.CreateTodo(ctx, strings.TrimSpace(title)); err != nil {
+		return ListVM{}, fmt.Errorf("save todo: %w", err)
+	}
+	todos, err := s.queries.ListTodos(ctx)
+	if err != nil {
+		return ListVM{}, fmt.Errorf("list todos after add: %w", err)
+	}
+	return ListVM{Todos: todos}, nil
+}
+
+func (s *Service) Toggle(ctx context.Context, id int64) (ListVM, error) {
+	t, err := s.queries.GetTodo(ctx, id)
+	if err != nil {
+		return ListVM{}, err
 	}
 	t.Done = !t.Done
-	if err := s.repo.Update(ctx, t); err != nil {
-		return nil, err
+	if err := s.queries.UpdateTodo(ctx, db.UpdateTodoParams{ID: t.ID, Title: t.Title, Done: t.Done}); err != nil {
+		return ListVM{}, err
 	}
-	return s.repo.List(ctx)
+	todos, err := s.queries.ListTodos(ctx)
+	if err != nil {
+		return ListVM{}, fmt.Errorf("list todos after toggle: %w", err)
+	}
+	return ListVM{Todos: todos}, nil
 }
 
-// Delete removes by ID. Returns fresh list.
-func (s *Service) Delete(ctx context.Context, id string) ([]Todo, error) {
-	if err := s.repo.Delete(ctx, id); err != nil {
-		return nil, err
+func (s *Service) Delete(ctx context.Context, id int64) (ListVM, error) {
+	if err := s.queries.DeleteTodo(ctx, id); err != nil {
+		return ListVM{}, err
 	}
-	return s.repo.List(ctx)
+	todos, err := s.queries.ListTodos(ctx)
+	if err != nil {
+		return ListVM{}, fmt.Errorf("list todos after delete: %w", err)
+	}
+	return ListVM{Todos: todos}, nil
 }

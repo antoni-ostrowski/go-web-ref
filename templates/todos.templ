@@ -1,6 +1,8 @@
 package templates
 
 import "go-htmx-todo/internal/todo"
+import db "go-htmx-todo/internal/db/sqlc"
+import "fmt"
 
 // Page is FULL page. Only page handler uses it.
 templ Page(vm todo.PageVM) {
@@ -44,22 +46,10 @@ templ List(vm todo.ListVM) {
 	</ul>
 }
 
-// List helper that takes slice directly for Page convenience
-templ ListFromSlice(todos []todo.Todo) {
-	<ul id="todo-list">
-		for _, t := range todos {
-			@Item(t)
-		}
-		if len(todos) == 0 {
-			<li style="color:#888;">no todos yet — add one above</li>
-		}
-	</ul>
-}
-
-templ Item(t todo.Todo) {
+templ Item(t db.Todo) {
 	<li>
 		<button
-			hx-post={ "/todos/" + t.ID + "/toggle" }
+			hx-post={ fmt.Sprintf("/todos/%d/toggle", t.ID) }
 			hx-target="#todo-list"
 			hx-swap="innerHTML"
 			class={ templ.KV("done", t.Done) }
@@ -73,7 +63,7 @@ templ Item(t todo.Todo) {
 		</button>
 		<span style="flex:1"></span>
 		<button
-			hx-delete={ "/todos/" + t.ID }
+			hx-delete={ fmt.Sprintf("/todos/%d", t.ID) }
 			hx-target="#todo-list"
 			hx-swap="innerHTML"
 			style="color:#c00;"
