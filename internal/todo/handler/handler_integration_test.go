@@ -12,7 +12,6 @@ import (
 	db "go-htmx-todo/internal/db/sqlc"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
 func TestHandlersWithPostgres(t *testing.T) {
@@ -22,22 +21,11 @@ func TestHandlersWithPostgres(t *testing.T) {
 
 	ctx := context.Background()
 
-	container, err := postgres.Run(ctx, "postgres:16-alpine",
-		postgres.WithDatabase("todos"),
-		postgres.WithUsername("postgres"),
-		postgres.WithPassword("postgres"),
-		postgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start PostgreSQL container: %v", err)
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		databaseURL = "postgres://postgres:postgres@localhost:5432/todos?sslmode=disable"
 	}
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-
-	connectionString, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("get connection string: %v", err)
-	}
-	pool, err := pgxpool.New(ctx, connectionString)
+	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		t.Fatalf("create pool: %v", err)
 	}
@@ -50,7 +38,7 @@ func TestHandlersWithPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema: %v", err)
 	}
-	if _, err := pool.Exec(ctx, string(schema)); err != nil {
+	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS todos;"+string(schema)); err != nil {
 		t.Fatalf("apply schema: %v", err)
 	}
 

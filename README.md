@@ -241,11 +241,17 @@ go test -race ./...
 go vet ./...
 ```
 
-Run the PostgreSQL integration test with Docker:
+Run the PostgreSQL integration test with a disposable Docker container:
 
 ```bash
-INTEGRATION_TESTS=1 go test ./internal/todo/handler -run TestHandlersWithPostgres -v
+mise run test-integration  # starts postgres:16-alpine on :5432, runs test, cleans up
 ```
+
+`test-integration` starts a disposable `postgres:16-alpine` container on
+`:5432`, waits until it is ready, runs the test, and removes the container even
+on failure. The test reads `DATABASE_URL` (default:
+`postgres://postgres:postgres@localhost:5432/todos?sslmode=disable`) and applies
+`internal/db/schema.sql` itself.
 
 The integration test verifies:
 
@@ -307,7 +313,7 @@ mise run db-apply        # atlas schema apply
 mise run db-validate     # atlas schema validate
 mise run test            # go test ./...
 mise run test-race       # go test -race ./...
-mise run test-integration# integration with real Postgres
+mise run test-integration# spins up disposable Postgres, runs integration tests, cleans up
 mise run check           # generate + vet + test
 mise run dev             # go run .
 ```
