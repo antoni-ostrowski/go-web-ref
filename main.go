@@ -5,8 +5,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
+	"go-htmx-todo/internal/actions"
 	db "go-htmx-todo/internal/db/sqlc"
+	"go-htmx-todo/internal/todo"
 	"go-htmx-todo/internal/todo/handler"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,12 +31,19 @@ func main() {
 	defer pool.Close()
 
 	queries := db.New(pool)
+	todos := todo.NewService(queries) // built once, shared by every Register
 
 	mux := http.NewServeMux()
-	handler.Register(mux, queries) // domain creates service and owns routes
+	handler.Register(mux, todos) // domain routes
+	actions.Register(mux, todos) // cross-domain action routes
 
-	slog.Info("listening", "address", "http://localhost:8080")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	srv := http.Server{
+		Addr:              ":3000",
+		ReadHeaderTimeout: 10 * time.Second,
+		Handler:           mux,
+	}
+	slog.Info("listening", "port", srv.Addr)
+	if err := srv.ListenAndServe(); err != nil {
 		slog.Error("server stopped", "error", err)
 	}
 }

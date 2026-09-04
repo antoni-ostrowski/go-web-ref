@@ -2,74 +2,97 @@ package todo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	db "go-htmx-todo/internal/db/sqlc"
+
+	"github.com/jackc/pgx/v5"
 )
 
-// Service holds todo rules and generated sqlc queries. It is HTMX-oriented:
-// methods return the ViewModel that the corresponding component renders.
-type Service struct {
-	queries *db.Queries
+// TodoStore is the persistence seam for the todo domain.
+//
+// The service depends on this narrow interface instead of on the concrete
+// *db.Queries so tests can substitute an in-memory fake and run the whole
+// behavior suite with no database. sqlc's generated *db.Queries satisfies
+// this interface exactly, so production wiring stays NewService(db.New(pool))
+// — no adapter package needed.
+//
+// Keep the interface narrow: only what this domain actually calls. A new
+// domain gets its own store interface rather than a growing global one.
+type TodoStore interface {
+	ListTodos(ctx context.Context) ([]db.Todo, error)
+	CreateTodo(ctx context.Context, title string) (db.Todo, error)
+	GetTodo(ctx context.Context, id int64) (db.Todo, error)
+	UpdateTodo(ctx context.Context, arg db.UpdateTodoParams) error
+	DeleteTodo(ctx context.Context, id int64) error
 }
 
-func NewService(queries *db.Queries) *Service {
-	return &Service{queries: queries}
+// Compile-time check: if sqlc's generated queries stop satisfying the todo
+// contract, this package stops building — drift is caught here, not in tests.
+var _ TodoStore = (*db.Queries)(nil)
+
+// Sentinel errors: services return these so callers (handlers, CLIs, other
+// services) can decide what to do without string-matching messages.
+var (
+	ErrValidation = errors.New("todo: validation failed")
+	ErrNotFound   = errors.New("todo: not found")
+)
+
+// Service holds todo rules and the TodoStore seam. The service returns domain
+// values ([]db.Todo), never ViewModels; handlers shape display types.
+type Service struct {
+	store TodoStore
+}
+
+func NewService(store TodoStore) *Service {
+	return &Service{store: store}
 }
 
 func ValidateTitle(title string) error {
 	if strings.TrimSpace(title) == "" {
-		return fmt.Errorf("title cannot be empty")
+		return fmt.Errorf("%w: title cannot be empty", ErrValidation)
 	}
 	return nil
 }
 
-func (s *Service) List(ctx context.Context) (PageVM, error) {
-	todos, err := s.queries.ListTodos(ctx)
+func (s *Service) List(ctx context.Context) ([]db.Todo, error) {
+	todos, err := s.store.ListTodos(ctx)
 	if err != nil {
-		return PageVM{}, fmt.Errorf("list todos: %w", err)
+		return nil, fmt.Errorf("list todos: %w", err)
 	}
-	return PageVM{Todos: todos}, nil
+	return todos, nil
 }
 
-func (s *Service) Add(ctx context.Context, title string) (ListVM, error) {
+func (s *Service) Add(ctx context.Context, title string) ([]db.Todo, error) {
 	if err := ValidateTitle(title); err != nil {
-		return ListVM{}, err
+		return nil, err
 	}
-	if _, err := s.queries.CreateTodo(ctx, strings.TrimSpace(title)); err != nil {
-		return ListVM{}, fmt.Errorf("save todo: %w", err)
+	if _, err := s.store.CreateTodo(ctx, strings.TrimSpace(title)); err != nil {
+		return nil, fmt.Errorf("save todo: %w", err)
 	}
-	todos, err := s.queries.ListTodos(ctx)
-	if err != nil {
-		return ListVM{}, fmt.Errorf("list todos after add: %w", err)
-	}
-	return ListVM{Todos: todos}, nil
+	return s.List(ctx)
 }
 
-func (s *Service) Toggle(ctx context.Context, id int64) (ListVM, error) {
-	t, err := s.queries.GetTodo(ctx, id)
+func (s *Service) Toggle(ctx context.Context, id int64) ([]db.Todo, error) {
+	t, err := s.store.GetTodo(ctx, id)
 	if err != nil {
-		return ListVM{}, err
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: id %d", ErrNotFound, id)
+		}
+		return nil, fmt.Errorf("get todo: %w", err)
 	}
 	t.Done = !t.Done
-	if err := s.queries.UpdateTodo(ctx, db.UpdateTodoParams{ID: t.ID, Title: t.Title, Done: t.Done}); err != nil {
-		return ListVM{}, err
+	if err := s.store.UpdateTodo(ctx, db.UpdateTodoParams{ID: t.ID, Title: t.Title, Done: t.Done}); err != nil {
+		return nil, fmt.Errorf("update todo: %w", err)
 	}
-	todos, err := s.queries.ListTodos(ctx)
-	if err != nil {
-		return ListVM{}, fmt.Errorf("list todos after toggle: %w", err)
-	}
-	return ListVM{Todos: todos}, nil
+	return s.List(ctx)
 }
 
-func (s *Service) Delete(ctx context.Context, id int64) (ListVM, error) {
-	if err := s.queries.DeleteTodo(ctx, id); err != nil {
-		return ListVM{}, err
+func (s *Service) Delete(ctx context.Context, id int64) ([]db.Todo, error) {
+	if err := s.store.DeleteTodo(ctx, id); err != nil {
+		return nil, fmt.Errorf("delete todo: %w", err)
 	}
-	todos, err := s.queries.ListTodos(ctx)
-	if err != nil {
-		return ListVM{}, fmt.Errorf("list todos after delete: %w", err)
-	}
-	return ListVM{Todos: todos}, nil
+	return s.List(ctx)
 }

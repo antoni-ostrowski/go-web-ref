@@ -3,72 +3,122 @@ package handler
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"os"
-	"strings"
+	"sync"
 	"testing"
 
+	"go-htmx-todo/internal/testutil"
+
 	db "go-htmx-todo/internal/db/sqlc"
+	"go-htmx-todo/internal/todo"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestHandlersWithPostgres(t *testing.T) {
+var (
+	poolOnce sync.Once
+	tstPool  *pgxpool.Pool
+	tstErr   error
+)
+
+// testPool connects to PostgreSQL once per package and applies schema.sql.
+// Tests are skipped unless INTEGRATION_TESTS=1 (see `mise run test-integration`).
+func testPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
 	if os.Getenv("INTEGRATION_TESTS") != "1" {
 		t.Skip("set INTEGRATION_TESTS=1 to run PostgreSQL integration tests")
 	}
 
 	ctx := context.Background()
+	poolOnce.Do(func() {
+		databaseURL := os.Getenv("DATABASE_URL")
+		if databaseURL == "" {
+			databaseURL = "postgres://postgres:postgres@localhost:5432/todos?sslmode=disable"
+		}
+		tstPool, tstErr = pgxpool.New(ctx, databaseURL)
+		if tstErr != nil {
+			return
+		}
+		if tstErr = tstPool.Ping(ctx); tstErr != nil {
+			return
+		}
+		schema, err := os.ReadFile("../../db/schema.sql")
+		if err != nil {
+			tstErr = err
+			return
+		}
+		if _, tstErr = tstPool.Exec(ctx, "DROP TABLE IF EXISTS todos;"+string(schema)); tstErr != nil {
+			return
+		}
+	})
+	if tstErr != nil {
+		t.Fatalf("integration pool: %v", tstErr)
+	}
+	return tstPool
+}
 
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		databaseURL = "postgres://postgres:postgres@localhost:5432/todos?sslmode=disable"
+// truncate resets state so the contract test starts from a known, empty
+// table (RESTART IDENTITY makes the first created todo's ID deterministic).
+func truncate(t *testing.T, p *pgxpool.Pool) {
+	t.Helper()
+	if _, err := p.Exec(context.Background(), "TRUNCATE todos RESTART IDENTITY"); err != nil {
+		t.Fatalf("truncate: %v", err)
 	}
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("create pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	if err := pool.Ping(ctx); err != nil {
-		t.Fatalf("ping PostgreSQL: %v", err)
-	}
+}
 
-	schema, err := os.ReadFile("../../db/schema.sql")
-	if err != nil {
-		t.Fatalf("read schema: %v", err)
-	}
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS todos;"+string(schema)); err != nil {
-		t.Fatalf("apply schema: %v", err)
-	}
+// TestHandlerHTTPContract is the single integration test. It runs requests
+// through the registered routes against real PostgreSQL and asserts:
+//
+//   - the right route matches and the form/body is parsed
+//   - the handler calls the service and the service's data reaches the
+//     response body (the new todo appears, the toggled one is marked done,
+//     the empty state appears after deletion)
+//   - sentinel errors map to statuses (422 validation, 404 missing)
+//
+// It does NOT assert the exact HTML the templates produce (no golden files)
+// and it does NOT re-test service behavior (unit tests with the fake store
+// already cover that). It only proves the bridge: HTTP in, rendered data out.
+//
+// The first four subtests form one sequential roundtrip — add, toggle,
+// delete — each asserting the visible effect of the previous step.
+func TestHandlerHTTPContract(t *testing.T) {
+	p := testPool(t)
+	truncate(t, p)
 
 	mux := http.NewServeMux()
-	Register(mux, db.New(pool))
+	Register(mux, todo.NewService(db.New(p)))
 
-	addBody := url.Values{"title": {"buy milk"}}.Encode()
-	addRequest := httptest.NewRequest(http.MethodPost, "/todos", strings.NewReader(addBody))
-	addRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	addResponse := httptest.NewRecorder()
-	mux.ServeHTTP(addResponse, addRequest)
-	if addResponse.Code != http.StatusOK || !strings.Contains(addResponse.Body.String(), "buy milk") {
-		t.Fatalf("add response = %d %q", addResponse.Code, addResponse.Body.String())
-	}
+	t.Run("GET / renders the full page", func(t *testing.T) {
+		rec := testutil.Do(t, mux, http.MethodGet, "/", nil)
+		testutil.WantCode(t, rec, http.StatusOK)
+		testutil.WantBody(t, rec, "<!doctype html>", `id="todo-list"`)
+	})
 
-	pageResponse := httptest.NewRecorder()
-	mux.ServeHTTP(pageResponse, httptest.NewRequest(http.MethodGet, "/", nil))
-	if pageResponse.Code != http.StatusOK || !strings.Contains(pageResponse.Body.String(), "buy milk") {
-		t.Fatalf("page response = %d %q", pageResponse.Code, pageResponse.Body.String())
-	}
+	t.Run("POST /todos renders the fragment with the new todo", func(t *testing.T) {
+		rec := testutil.Do(t, mux, http.MethodPost, "/todos", map[string][]string{"title": {"buy milk"}})
+		testutil.WantCode(t, rec, http.StatusOK)
+		testutil.WantBody(t, rec, "buy milk", `id="todo-list"`)
+	})
 
-	toggleResponse := httptest.NewRecorder()
-	mux.ServeHTTP(toggleResponse, httptest.NewRequest(http.MethodPost, "/todos/1/toggle", nil))
-	if toggleResponse.Code != http.StatusOK || !strings.Contains(toggleResponse.Body.String(), `class="done"`) {
-		t.Fatalf("toggle response = %d %q", toggleResponse.Code, toggleResponse.Body.String())
-	}
+	t.Run("POST /todos/{id}/toggle renders the todo as done", func(t *testing.T) {
+		rec := testutil.Do(t, mux, http.MethodPost, "/todos/1/toggle", nil)
+		testutil.WantCode(t, rec, http.StatusOK)
+		testutil.WantBody(t, rec, `class="done"`, "buy milk")
+	})
 
-	deleteResponse := httptest.NewRecorder()
-	mux.ServeHTTP(deleteResponse, httptest.NewRequest(http.MethodDelete, "/todos/1", nil))
-	if deleteResponse.Code != http.StatusOK || !strings.Contains(deleteResponse.Body.String(), "no todos yet") {
-		t.Fatalf("delete response = %d %q", deleteResponse.Code, deleteResponse.Body.String())
-	}
+	t.Run("DELETE /todos/{id} renders the empty state", func(t *testing.T) {
+		rec := testutil.Do(t, mux, http.MethodDelete, "/todos/1", nil)
+		testutil.WantCode(t, rec, http.StatusOK)
+		testutil.WantBody(t, rec, "no todos yet")
+	})
+
+	t.Run("POST /todos with blank title is 422", func(t *testing.T) {
+		rec := testutil.Do(t, mux, http.MethodPost, "/todos", map[string][]string{"title": {"   "}})
+		testutil.WantCode(t, rec, http.StatusUnprocessableEntity)
+	})
+
+	t.Run("toggle of missing todo is 404", func(t *testing.T) {
+		rec := testutil.Do(t, mux, http.MethodPost, "/todos/999999/toggle", nil)
+		testutil.WantCode(t, rec, http.StatusNotFound)
+	})
 }

@@ -46,6 +46,23 @@ run = "atlas schema apply --url \"${DATABASE_URL:-postgres://postgres:postgres@l
 description = "Validate schema"
 run = "atlas schema validate --url \"file://internal/db/schema.sql\" --dev-url \"docker://postgres/16/dev\""
 
+[tasks.db]
+description = "Start (or reuse) the local Postgres dev container"
+run = """
+if ! docker ps -q --filter "name=^go-htmx-todo-dev-db$" | grep -q .; then
+  docker rm -f go-htmx-todo-dev-db >/dev/null 2>&1 || true
+  docker run --rm -d --name go-htmx-todo-dev-db \
+    -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=todos \
+    -p 5432:5432 postgres:16-alpine
+fi
+for i in $(seq 1 30); do
+  docker exec go-htmx-todo-dev-db pg_isready -U postgres -d todos >/dev/null 2>&1 && break
+  sleep 1
+done
+echo "dev db ready on localhost:5432 (postgres/postgres, db: todos)"
+"""
+
 [tasks.dev]
-description = "Run the web app"
+description = "Run the web app (starts the dev Postgres container first)"
+depends = ["db"]
 run = "go run ."

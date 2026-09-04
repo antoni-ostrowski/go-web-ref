@@ -5,15 +5,14 @@ import (
 	"net/http"
 	"strconv"
 
-	db "go-htmx-todo/internal/db/sqlc"
+	"go-htmx-todo/internal/httpx"
 	"go-htmx-todo/internal/todo"
 	"go-htmx-todo/templates"
 )
 
 // Register wires all todo routes. Call from main.go.
-// Domain owns its routes and creates its service; main stays composition root.
-func Register(mux *http.ServeMux, queries *db.Queries) {
-	svc := todo.NewService(queries)
+// main builds the service; this package only closes over it and owns its routes.
+func Register(mux *http.ServeMux, svc *todo.Service) {
 	mux.HandleFunc("GET /{$}", handlePage(svc))
 	mux.HandleFunc("POST /todos", handleAdd(svc))
 	mux.HandleFunc("POST /todos/{id}/toggle", handleToggle(svc))
@@ -22,27 +21,26 @@ func Register(mux *http.ServeMux, queries *db.Queries) {
 
 func handlePage(svc *todo.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		vm, err := svc.List(r.Context())
+		todos, err := svc.List(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := templates.Page(vm).Render(r.Context(), w); err != nil {
-			http.Error(w, err.Error(), 500)
+		if err := templates.Page(todo.PageVM{Todos: todos}).Render(r.Context(), w); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	}
 }
 
 func handleAdd(svc *todo.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		title := r.FormValue("title")
-		vm, err := svc.Add(r.Context(), title)
+		todos, err := svc.Add(r.Context(), r.FormValue("title"))
 		if err != nil {
-			http.Error(w, err.Error(), 422)
+			http.Error(w, err.Error(), httpx.StatusFor(err))
 			return
 		}
-		if err := templates.List(vm).Render(r.Context(), w); err != nil {
-			http.Error(w, err.Error(), 500)
+		if err := templates.List(todo.ListVM{Todos: todos}).Render(r.Context(), w); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	}
 }
@@ -54,13 +52,13 @@ func handleToggle(svc *todo.Service) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		vm, err := svc.Toggle(r.Context(), id)
+		todos, err := svc.Toggle(r.Context(), id)
 		if err != nil {
-			http.Error(w, err.Error(), 404)
+			http.Error(w, err.Error(), httpx.StatusFor(err))
 			return
 		}
-		if err := templates.List(vm).Render(r.Context(), w); err != nil {
-			http.Error(w, err.Error(), 500)
+		if err := templates.List(todo.ListVM{Todos: todos}).Render(r.Context(), w); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	}
 }
@@ -72,13 +70,13 @@ func handleDelete(svc *todo.Service) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		vm, err := svc.Delete(r.Context(), id)
+		todos, err := svc.Delete(r.Context(), id)
 		if err != nil {
-			http.Error(w, err.Error(), 404)
+			http.Error(w, err.Error(), httpx.StatusFor(err))
 			return
 		}
-		if err := templates.List(vm).Render(r.Context(), w); err != nil {
-			http.Error(w, err.Error(), 500)
+		if err := templates.List(todo.ListVM{Todos: todos}).Render(r.Context(), w); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	}
 }
