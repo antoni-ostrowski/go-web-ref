@@ -2,11 +2,17 @@
 go = "1.27.0"
 sqlc = "1.30.0"
 "aqua:a-h/templ" = "v0.3.1020"
+"aqua:air-verse/air" = "v1.67.4"
 "aqua:sqldef/sqldef/psqldef" = "3.11.20"
+"github:tailwindlabs/tailwindcss" = "v4.3.3"
 
 [tasks.generate]
 description = "Generate sqlc and templ code"
 run = "sqlc generate && templ generate"
+
+[tasks.css]
+description = "Build Tailwind CSS (minified, for prod builds)"
+run = "tailwindcss -i ./static/css/input.css -o ./static/css/app.css --minify"
 
 [tasks.test]
 description = "Run tests"
@@ -63,6 +69,11 @@ echo "dev db ready on localhost:5432 (postgres/postgres, db: todos)"
 """
 
 [tasks.dev]
-description = "Run the web app (starts dev Postgres and applies schema first)"
+description = "Run the web app with hot reload (starts dev Postgres, applies schema)"
 depends = ["db", "db-apply"]
-run = "go run ."
+run = "air"
+
+[tasks.build]
+description = "Build the prod binary (minified CSS)"
+depends = ["generate", "css"]
+run = "go build -o ./tmp/app ."

@@ -188,6 +188,22 @@ schema.sql ──► sqlc    ──► Go types/queries
 Typical loop: edit `schema.sql` → `mise run generate` → `mise run db-plan`
 → `mise run db-apply` → `mise run check`.
 
+## Styling — Tailwind via standalone CLI
+
+No Node, no `package.json`: the Tailwind CLI runs as a pinned standalone
+binary (`github:tailwindlabs/tailwindcss` in `mise.toml`). It scans
+`templates/` for classes (`@source` in `input.css`) and emits plain CSS
+served by the static handler. Two flavors:
+
+```bash
+mise run dev    # Air hot reload: unminified CSS rebuilt on template change
+mise run build  # prod binary + minified CSS via `mise run css`
+```
+
+`static/css/app.css` is gitignored build output. Utility classes appear in
+`.templ` sources as plain strings (including inside `templ.KV`), so the
+scanner picks them up with no config beyond `@source`.
+
 ## Testing — integration only
 
 One tier: request the handlers over HTTP against real PostgreSQL, assert
@@ -269,6 +285,8 @@ go-htmx-paradim-inspo/
 │   ├── auth_test.go              # auth tests: HTTP response + DB state
 │   └── static_test.go            # static tests: content type, no listing/traversal
 ├── static/
+│   ├── css/input.css            # Tailwind entry (@import + @source)
+│   ├── css/app.css              # built output (gitignored, `mise run css`)
 │   └── js/htmx.min.js            # vendored htmx (no CDN dependency)
 └── templates/
     ├── todos.templ               # Page(todos, username)/List(todos)/Item(t)
@@ -286,6 +304,10 @@ list from the caller, since the suite knows which tables exist.
 ## Mise Tasks
 
 ```bash
+mise run generate        # sqlc + templ codegen
+mise run css             # Tailwind build, minified (prod)
+mise run dev             # Air hot reload: templ + unminified CSS + Go rebuild
+mise run build           # generate + minified CSS + prod binary in tmp/
 mise run db              # runs local pg via docker
 mise run db-plan         # psqldef dry-run
 mise run db-apply        # psqldef apply

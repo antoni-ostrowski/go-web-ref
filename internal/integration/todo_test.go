@@ -107,7 +107,7 @@ func TestToggle_FlipsDone(t *testing.T) {
 
 	rec := handlertest.Do(t, app, http.MethodPost, "/todos/1/toggle", nil, cookie)
 	handlertest.WantCode(t, rec, http.StatusOK)
-	handlertest.WantBody(t, rec, `class="done"`, "alpha", "bravo")
+	handlertest.WantBody(t, rec, `line-through`, "alpha", "bravo")
 
 	todos := listDB(t, q, user)
 	if len(todos) != 2 || !todos[0].Done || todos[1].Done {
@@ -219,7 +219,7 @@ func TestCompleteAll(t *testing.T) {
 
 	rec = handlertest.Do(t, app, http.MethodPost, "/todos/complete-all", nil, cookie)
 	handlertest.WantCode(t, rec, http.StatusOK)
-	handlertest.WantBody(t, rec, `class="done"`)
+	handlertest.WantBody(t, rec, `line-through`)
 
 	todos := listDB(t, q, user)
 	if len(todos) != 2 || !todos[0].Done || !todos[1].Done {

@@ -7,16 +7,13 @@ templ authShell(title string) {
 			<meta charset="UTF-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 			<title>{ title } - todos</title>
-			<style>
-				body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
-				form { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; }
-				input { padding: 0.5rem; }
-				.error { color: #c00; }
-			</style>
+			<link rel="stylesheet" href="/static/css/app.css"/>
 		</head>
-		<body>
-			<h1>{ title }</h1>
-			{ children... }
+		<body class="bg-neutral-100 font-sans text-neutral-900 antialiased">
+			<main class="mx-auto max-w-md px-4 py-10">
+				<h1 class="text-2xl font-semibold tracking-tight">{ title }</h1>
+				{ children... }
+			</main>
 		</body>
 	</html>
 }
@@ -25,14 +22,14 @@ templ authShell(title string) {
 templ Signup(errMsg string) {
 	@authShell("sign up") {
 		if errMsg != "" {
-			<p class="error">{ errMsg }</p>
+			<p class="mt-4 text-sm text-red-600">{ errMsg }</p>
 		}
-		<form method="post" action="/signup">
-			<input name="username" placeholder="username" required autocomplete="username"/>
-			<input name="password" type="password" placeholder="password (min 8 characters)" required autocomplete="new-password"/>
-			<button type="submit">Sign up</button>
+		<form method="post" action="/signup" class="mt-4 flex flex-col gap-2">
+			<input name="username" placeholder="username" required autocomplete="username" class="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm focus:border-neutral-500 focus:outline-none"/>
+			<input name="password" type="password" placeholder="password (min 8 characters)" required autocomplete="new-password" class="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm focus:border-neutral-500 focus:outline-none"/>
+			<button type="submit" class="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700">Sign up</button>
 		</form>
-		<p>already have an account? <a href="/signin">sign in</a></p>
+		<p class="mt-4 text-sm text-neutral-500">already have an account? <a href="/signin" class="underline">sign in</a></p>
 	}
 }
 
@@ -40,13 +37,13 @@ templ Signup(errMsg string) {
 templ Signin(errMsg string) {
 	@authShell("sign in") {
 		if errMsg != "" {
-			<p class="error">{ errMsg }</p>
+			<p class="mt-4 text-sm text-red-600">{ errMsg }</p>
 		}
-		<form method="post" action="/signin">
-			<input name="username" placeholder="username" required autocomplete="username"/>
-			<input name="password" type="password" placeholder="password" required autocomplete="current-password"/>
-			<button type="submit">Sign in</button>
+		<form method="post" action="/signin" class="mt-4 flex flex-col gap-2">
+			<input name="username" placeholder="username" required autocomplete="username" class="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm focus:border-neutral-500 focus:outline-none"/>
+			<input name="password" type="password" placeholder="password" required autocomplete="current-password" class="rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm focus:border-neutral-500 focus:outline-none"/>
+			<button type="submit" class="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700">Sign in</button>
 		</form>
-		<p>no account yet? <a href="/signup">sign up</a></p>
+		<p class="mt-4 text-sm text-neutral-500">no account yet? <a href="/signup" class="underline">sign up</a></p>
 	}
 }
