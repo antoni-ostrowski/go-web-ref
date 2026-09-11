@@ -4,8 +4,27 @@
 
 package db
 
+import (
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+type Session struct {
+	Token  string
+	Data   []byte
+	Expiry pgtype.Timestamptz
+}
+
 type Todo struct {
-	ID    int64
-	Title string
-	Done  bool
+	ID     int64
+	UserID uuid.UUID
+	Title  string
+	Done   bool
+}
+
+type User struct {
+	ID           uuid.UUID
+	Username     string
+	PasswordHash string
+	CreatedAt    pgtype.Timestamptz
 }

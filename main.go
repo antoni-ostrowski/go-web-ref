@@ -7,11 +7,12 @@ import (
 	"os"
 	"time"
 
-	"go-htmx-todo/internal/actions"
+	"go-htmx-todo/internal/handlers"
+	"go-htmx-todo/internal/handlers/todo"
 	db "go-htmx-todo/internal/db/sqlc"
-	"go-htmx-todo/internal/todo"
-	"go-htmx-todo/internal/todo/handler"
 
+	"github.com/alexedwards/scs/pgxstore"
+	"github.com/alexedwards/scs/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -30,20 +31,18 @@ func main() {
 	}
 	defer pool.Close()
 
-	queries := db.New(pool)
-	todos := todo.NewService(queries) // built once, shared by every Register
+	// Composition root: one Deps, built once, handed to every domain.
+	sessions := scs.New()
+	sessions.Store = pgxstore.New(pool)
+	sessions.Lifetime = 7 * 24 * 60 * time.Minute
+
+	deps := handlers.Deps{Q: db.New(pool), Sessions: sessions}
 
 	mux := http.NewServeMux()
-	handler.Register(mux, todos) // domain routes
-	actions.Register(mux, todos) // cross-domain action routes
+	todo.Register(mux, deps)
 
-	srv := http.Server{
-		Addr:              ":3000",
-		ReadHeaderTimeout: 10 * time.Second,
-		Handler:           mux,
-	}
-	slog.Info("listening", "port", srv.Addr)
-	if err := srv.ListenAndServe(); err != nil {
+	slog.Info("listening", "address", "http://localhost:8080")
+	if err := http.ListenAndServe(":8080", sessions.LoadAndSave(mux)); err != nil {
 		slog.Error("server stopped", "error", err)
 	}
 }

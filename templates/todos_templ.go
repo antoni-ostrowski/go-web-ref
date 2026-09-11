@@ -8,12 +8,11 @@ package templates
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-import "go-htmx-todo/internal/todo"
 import db "go-htmx-todo/internal/db/sqlc"
 import "fmt"
 
-// Page is FULL page. Only page handler uses it.
-func Page(vm todo.PageVM) templ.Component {
+// Page is FULL page. Only the GET / handler uses it.
+func Page(todos []db.Todo) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -38,11 +37,11 @@ func Page(vm todo.PageVM) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = List(todo.ListVM{Todos: vm.Todos}).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = List(todos).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<p style=\"color:#888; font-size:0.9rem;\">Full page via GET /. Fragments via POST/DELETE /todos (handler builds VM).</p></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<p style=\"color:#888; font-size:0.9rem;\">Full page via GET /. Fragments via POST/DELETE /todos.</p></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -51,7 +50,7 @@ func Page(vm todo.PageVM) templ.Component {
 }
 
 // List is FRAGMENT. Mutation handlers return this, htmx swaps #todo-list.
-func List(vm todo.ListVM) templ.Component {
+func List(todos []db.Todo) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -76,13 +75,13 @@ func List(vm todo.ListVM) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		for _, t := range vm.Todos {
+		for _, t := range todos {
 			templ_7745c5c3_Err = Item(t).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		if len(vm.Todos) == 0 {
+		if len(todos) == 0 {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<li style=\"color:#888;\">no todos yet — add one above</li>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
@@ -133,7 +132,7 @@ func Item(t db.Todo) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.ResolveAttributeValue(fmt.Sprintf("/todos/%d/toggle", t.ID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/todos.templ`, Line: 52, Col: 50}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/todos.templ`, Line: 51, Col: 50}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var5)
 		if templ_7745c5c3_Err != nil {
@@ -170,7 +169,7 @@ func Item(t db.Todo) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(t.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/todos.templ`, Line: 62, Col: 12}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/todos.templ`, Line: 61, Col: 12}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -183,7 +182,7 @@ func Item(t db.Todo) templ.Component {
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.ResolveAttributeValue(fmt.Sprintf("/todos/%d", t.ID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/todos.templ`, Line: 66, Col: 45}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/todos.templ`, Line: 65, Col: 45}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var8)
 		if templ_7745c5c3_Err != nil {

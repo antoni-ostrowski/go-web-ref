@@ -1,7 +1,7 @@
 # Go + HTMX + templ reference
 
 Small server-rendered HTMX app using `net/http`, `templ`, `sqlc`, PostgreSQL,
-and `log/slog`. Serves as reference.
+`scs` sessions. Serves as a minimal template.
 
 ## Run
 
@@ -12,9 +12,8 @@ The app expects PostgreSQL. Default URL:
 # 1. Generate Go code from SQL
 mise run generate      # sqlc generate && templ generate
 
-# 2. Apply desired schema (Atlas declarative, no migration files)
-mise run db-apply      # atlas schema apply --to file://internal/db/schema.sql
-# or preview: mise run db-plan
+# 2. Apply desired schema (sqldef declarative, no migration files)
+mise run db-apply      # psqldef --apply --file internal/db/schema.sql
 
 # 3. Run
 mise run dev           # go run .
@@ -26,29 +25,13 @@ mise run dev           # go run .
 
 ```text
 main.go
-  creates pool, generated *sqlc.Queries, and global slog logger
-  builds each domain service ONCE and hands the ready services to every Register
-  calls todo/handler.Register(mux, todos) and actions.Register(mux, todos)
+  creates pool, Deps{Q, Sessions}
+  each domain registers its own routes: todo.Register(mux, deps)
+  wraps the mux with sessions.LoadAndSave
 
-todo/handler
-  Register closes over the ready todo.Service and owns the domain routes
-  handlers parse HTTP, call the service, and build VMs from []db.Todo
-
-todo/Service
-  owns todo rules; depends on TodoStore (interface), not concrete *db.Queries
-  returns domain values ([]db.Todo), never ViewModels
-  signals failure with sentinel errors: ErrValidation, ErrNotFound
-
-todo/TodoStore
-  the persistence seam; sqlc's generated *db.Queries satisfies it as-is
-  tests substitute an in-memory fake here, so behavior tests need no database
-
-actions
-  cross-domain behaviors as plain functions over domain services
-  Register owns the action routes; actions take only the services they need
-
-httpx
-  shared HTTP helpers; StatusFor maps every domain's sentinel errors to statuses
+handlers
+  root: Deps + CurrentUserID + ParseID — shared wiring, no routes
+  todo: the todo domain's routes and handlers (takes Deps as one arg)
 
 sqlc
   owns SQL, generated DB types, and generated query methods
@@ -56,15 +39,101 @@ sqlc
 PostgreSQL
 ```
 
-The dependency flow is intentionally short:
+There are no service structs, no store interfaces, no view-model types.
+The generated `*db.Queries` travels inside one flat wiring bag, and
+templates take `[]db.Todo` directly. Domains import the root for `Deps`
+and helpers, never the reverse — so `main.go` is the only place that sees
+every domain and no import cycle can form:
+
+```go
+type Deps struct {
+	Q        *db.Queries
+	Sessions *scs.SessionManager
+	// Cross-cutting deps join here as the app grows (logger, mailer, ...),
+	// each built once in main and owned by its own package.
+}
+
+// main.go composes domains; each domain owns its routes.
+func Register(mux *http.ServeMux, d Deps) // in handlers/todo
+
+func handleAdd(d Deps) http.HandlerFunc { // in handlers/todo
+	return func(w http.ResponseWriter, r *http.Request) {
+		title := strings.TrimSpace(r.FormValue("title"))
+		if title == "" {
+			http.Error(w, "title cannot be empty", http.StatusUnprocessableEntity)
+			return
+		}
+		// ... d.Q.CreateTodo, d.Q.ListTodos, templates.List(todos).Render
+	}
+}
+```
+
+Rules:
+
+- **One `Deps` bag, not N parameters.** `Register` and every handler
+  factory take `Deps` as a single argument, so a new shared dep means one
+  field here — built once in `main`, closed over in `Register` — instead of
+  a new parameter threaded through every factory.
+- **Keep it dumb.** Nothing constructed inside the handlers package, and
+  never request-scoped data: the acting user still comes from the session
+  per request via `CurrentUserID(r, d)`. Don't add fields speculatively —
+  `slog.Default()` already covers logging with nothing passed at all.
+- **Concrete by default, interfaces where swapping is real.** `*db.Queries`
+  and `*scs.SessionManager` stay concrete because tests exercise the real
+  thing — an interface there would add a seam nobody swaps. Reach for an
+  interface when a second implementation genuinely exists: a payments client
+  you must fake in tests, a mailer with sandbox/prod variants. Define it
+  narrowly at the consumer, not as a mirror of the concrete struct:
+
+```go
+// in Deps: one method the handlers actually call, trivial to fake.
+type Charger interface {
+	Charge(ctx context.Context, amountCents int64, token string) error
+}
+```
+- **No store interface.** Handlers call `d.Q.ListTodos`, `d.Q.CreateTodo`,
+  etc. directly. If the SQL changes, the compiler points at the handler.
+- **No action layer.** Validation is inline (`TrimSpace` + empty check);
+  not-found is `errors.Is(err, pgx.ErrNoRows)` → 404. Status mapping lives
+  next to the query that produces it.
+- **No view models.** `templates.Page([]db.Todo)` and
+  `templates.List([]db.Todo)` take domain rows directly.
+
+## HTTP — One Register, Short Handlers
 
 ```text
-HTTP handler → todo.Service ──TodoStore──► *db.Queries → PostgreSQL
-      ↑             │
-      └ templ VM ←──┘   handler maps []db.Todo (domain) → VM
-
-HTTP handler → action(s) ──► two+ domain services (composition only)
+GET /{$}                    → full page
+POST /todos                 → add            → list fragment
+POST /todos/{id}/toggle     → toggle         → list fragment
+DELETE /todos/{id}          → delete         → list fragment (idempotent)
+POST /todos/complete-all    → complete all   → list fragment
+POST /todos/clear-completed → clear completed → list fragment
 ```
+
+`handlers.CurrentUserID(r, d)` is the one place that reads the session.
+Sign-in does not exist yet: a request without a session user yields
+`uuid.Nil`, so anonymous visitors see an empty list and mutations fail on
+the `users(id)` foreign key. `TestAnonymous` locks this behavior in.
+
+## Sessions
+
+Session management is `github.com/alexedwards/scs/v2` backed by
+`scs/pgxstore` (the `sessions` table). Wiring lives in `main.go`:
+
+```go
+sessions := scs.New()
+sessions.Store = pgxstore.New(pool)
+sessions.Lifetime = 7 * 24 * 60 * time.Minute
+
+mux := http.NewServeMux()
+deps := handlers.Deps{Q: db.New(pool), Sessions: sessions}
+todo.Register(mux, deps)
+
+http.ListenAndServe(":8080", sessions.LoadAndSave(mux))
+```
+
+Tests build the same stack against the test database (`pgxstore` on the
+test pool), so the session middleware under test is the real one.
 
 ## sqlc
 
@@ -76,463 +145,117 @@ internal/db/schema.sql
 internal/db/queries.sql
 ```
 
-Generated files:
+Generated files (`internal/db/sqlc/`) — never edit by hand; change SQL,
+then run `sqlc generate`. `sqlc.yaml` maps UUID columns to
+`github.com/google/uuid.UUID` so signatures stay friendly.
+
+## sqldef (declarative schema)
+
+No migration files. `internal/db/schema.sql` is the single source of truth
+for both sqldef and sqlc:
 
 ```text
-internal/db/sqlc/
-  db.go
-  models.go
-  queries.sql.go
+schema.sql ──► psqldef ──► PostgreSQL (diff + apply)
+schema.sql ──► sqlc    ──► Go types/queries
 ```
 
-Never edit generated files. Change SQL, then run:
+Typical loop: edit `schema.sql` → `mise run generate` → `mise run db-plan`
+→ `mise run db-apply` → `mise run check`.
+
+## Testing — integration only
+
+One tier: request the handlers over HTTP against real PostgreSQL, assert
+the HTTP response **and** the database state. IDs stay deterministic
+(`RESTART IDENTITY`: first todo per test is 1), assertions match body
+substrings (never exact HTML), and `LoginAs` signs in through the real
+session middleware, standing in for unimplemented sign-in.
 
 ```bash
-sqlc generate
+go test ./...       # skips without INTEGRATION_TESTS=1
+mise run test-integration  # disposable postgres:16-alpine on :5433, full suite
 ```
 
-## Atlas (declarative schema)
+`internal/handlertest` holds the test-only helpers shared by the
+integration suite (`Pool`, `Truncate`, `LoginAs`, `Do`, `WantCode`,
+`WantBody`, `WantNoBody`). Production code must never import it.
+`internal/integration/setup_test.go` composes the whole app — the same
+wiring `main.go` performs — plus suite-specific seeding and state-reading:
 
-This repo uses Atlas declarative workflow — closest to Drizzle `push`. No
-`internal/db/migrations/*.sql` files. `internal/db/schema.sql` is the single
-source of truth for both Atlas and sqlc:
+- `testPool` — one-line wrapper fixing the schema path for `handlertest.Pool`.
+- `seedUser` inserts a user with raw SQL (no user queries exist yet).
+- `setup` returns the real app (every domain's `Register` + `LoadAndSave`),
+  the real `*db.Queries` for DB assertions, the session manager, and a
+  fresh user. When a new domain lands, register it here exactly as `main.go`
+  does — the two must stay in sync.
+- `listDB` reads stored state for the "did it actually write?" assertion.
 
-```text
-schema.sql ──► Atlas ──► PostgreSQL (schema apply)
-schema.sql ──► sqlc  ──► Go types/queries
-```
+`internal/integration/todo_test.go` has one independent test per behavior
+— each calls `setup(t)` for a fresh DB, so there is no shared state and no
+ordering dependency:
 
-`sqlc.yaml` already points at it:
+- page renders full shell when empty; page shows only own todos
+- add stores a trimmed row + renders the fragment; blank title is 422 and
+  stores nothing
+- toggle flips `done` in the DB both ways; missing → 404, malformed → 400,
+  another user's row → 404 with both users' rows untouched
+- delete removes only the targeted row; another user's/missing delete is 200 and
+  changes nothing (idempotent, documented)
+- complete-all marks all done (empty is a no-op); clear-completed keeps
+  only open todos
+- anonymous: page renders empty, mutating fails visibly
 
-```yaml
-schema: internal/db/schema.sql
-```
-
-**Typical loop:**
-
-```bash
-# edit internal/db/schema.sql (add table/column)
-# edit internal/db/queries.sql if needed
-mise run generate      # sqlc + templ
-mise run db-plan       # preview ALTER TABLE
-mise run db-apply      # apply
-mise run check         # vet + tests
-```
-
-**What Atlas does:**
-
-```bash
-atlas schema apply \
-  --url "$DATABASE_URL" \
-  --to "file://internal/db/schema.sql" \
-  --dev-url "docker://postgres/16/dev" \
-  --auto-approve       # skip prompt, plan still shown in --dry-run
-```
-
-*   compares current DB vs desired `schema.sql`
-*   plans `CREATE/ALTER TABLE`
-*   applies with `docker://postgres/16/dev` as temp dev DB for validation
-
-If you later want versioned, reviewed SQL in git, switch Atlas to `migrate diff`:
-
-```bash
-atlas migrate diff add_users --to file://internal/db/schema.sql --dir file://internal/db/migrations --dev-url docker://postgres/16/dev
-```
-
-## Domain Service
-
-`internal/todo/service.go` contains:
+The pattern per test is always the same — request, assert status + body
+fragment, assert DB:
 
 ```go
-type Service struct {
-    store TodoStore
-}
-
-func NewService(store TodoStore) *Service
-func (s *Service) List(ctx context.Context) ([]db.Todo, error)
-func (s *Service) Add(ctx context.Context, title string) ([]db.Todo, error)
-func (s *Service) Toggle(ctx context.Context, id int64) ([]db.Todo, error)
-func (s *Service) Delete(ctx context.Context, id int64) ([]db.Todo, error)
+rec := handlertest.Do(t, app, http.MethodPost, "/todos", url.Values{"title": {"buy milk"}}, cookie)
+handlertest.WantCode(t, rec, http.StatusOK)
+handlertest.WantBody(t, rec, "buy milk", `id="todo-list"`)
+todos := listDB(t, q, user) // prove the row is really stored
 ```
-
-Services hold the behavior worth naming: validation, error decisions, and
-cross-query flows. A trivial operation can still live here because every
-domain gets a service in this reference.
-
-**Decision: the service returns domain values, not ViewModels.**
-
-Service methods return `[]db.Todo` — the domain shape. Handlers build the
-HTMX ViewModels from it:
-
-```go
-todos, err := svc.Add(r.Context(), r.FormValue("title"))
-if err != nil {
-    http.Error(w, err.Error(), statusFor(err))
-    return
-}
-templates.List(todo.ListVM{Todos: todos}).Render(r.Context(), w)
-```
-
-Why: a ViewModel is a display concern. If the service returned `ListVM`
-directly, every service test would depend on the HTML fragment shape, and a
-UI change would break domain tests. Returning domain values keeps the service
-UI-agnostic, so the same method can later feed JSON, a CLI, or another UI
-without changing behavior.
-
-Services signal *why* they failed with sentinel errors, so callers decide
-what to do without string-matching messages:
-
-```go
-var ErrValidation = errors.New("todo: validation failed")
-var ErrNotFound   = errors.New("todo: not found")
-```
-
-Pure rules stay beside the service:
-
-```go
-func ValidateTitle(title string) error
-```
-
-Do not extract every small check into another package.
-
-## Persistence Seam
-
-`internal/todo/store.go` defines what the todo domain needs from storage:
-
-```go
-type TodoStore interface {
-    ListTodos(ctx context.Context) ([]db.Todo, error)
-    CreateTodo(ctx context.Context, title string) (db.Todo, error)
-    GetTodo(ctx context.Context, id int64) (db.Todo, error)
-    UpdateTodo(ctx context.Context, arg db.UpdateTodoParams) error
-    DeleteTodo(ctx context.Context, id int64) error
-}
-
-var _ TodoStore = (*db.Queries)(nil) // compile-time check
-```
-
-**Decision: depend on the interface, not on `*db.Queries`.**
-
-- The interface is owned by the domain package and implemented for free by
-  sqlc's generated `*db.Queries`. Production wiring stays `NewService(db.New(pool))`
-  — there is no adapter package.
-- The compile-time assertion fails the build if the generated queries ever
-  drift from the interface, so drift is caught in the compiler, not in tests.
-- Tests substitute an in-memory fake (`internal/todo/service_test.go`), so
-  the whole behavior suite runs in milliseconds with no database.
-
-Keep the interface narrow: only what this domain actually calls. A new domain
-gets its own store interface rather than a growing global one.
-
-## Authorization — Subject as a Parameter (pattern only, not implemented)
-
-This reference has no users, so nothing here enforces auth. When you add
-users to a real app built on this reference, use this pattern — it is the
-difference between testable and untestable auth code.
-
-**Protocol (avoid):** the service signature hides the actor:
-
-```go
-func (s *Service) Toggle(ctx context.Context, id int64) error // <- who is acting?
-```
-
-The implementation would have to read the "current user" from sessions or
-middleware. Correctness now depends on invisible request state, so testing
-each auth state means fabricating sessions, cookies, and middleware for
-every test.
-
-**Parameter (use):** the actor is an explicit input to the service, and the
-policy is a pure function:
-
-```go
-type Subject struct {
-    ID   int64
-    Role Role // guest | member | admin
-}
-
-// The whole policy in one pure, total, table-testable function.
-func can(u Subject, action string, ownerID int64) bool {
-    switch u.Role {
-    case RoleAdmin:  return true
-    case RoleMember: return u.ID == ownerID
-    default:         return false
-    }
-}
-
-func (s *Service) Toggle(ctx context.Context, u Subject, id int64) ([]db.Todo, error) {
-    t, err := s.store.GetTodo(ctx, id)
-    if err != nil { /* map to ErrNotFound */ }
-    if !can(u, "todos.toggle", t.OwnerID) {
-        return nil, ErrForbidden
-    }
-    // ...
-}
-```
-
-The session middleware only *parses* the cookie into a `Subject`; the service
-calls the pure policy and makes the *decision*. Test the whole role matrix as
-a table test against `can`, and test each auth state with a one-line
-`Subject` literal — no sessions, no HTTP. When the matrix grows, move `can`
-into its own `policy.go`.
-
-## Handler Registration
-
-`internal/todo/handler/handler.go` owns todo routes:
-
-```go
-func Register(mux *http.ServeMux, svc *todo.Service) {
-    mux.HandleFunc("GET /{$}", handlePage(svc))
-    mux.HandleFunc("POST /todos", handleAdd(svc))
-    mux.HandleFunc("POST /todos/{id}/toggle", handleToggle(svc))
-    mux.HandleFunc("DELETE /todos/{id}", handleDelete(svc))
-}
-```
-
-**Decision: `main.go` is the composition root — it builds each service once,
-every Register receives ready services.**
-
-- Register functions construct nothing; they close over what they receive and
-  own only their routes. One service instance per domain, built in one place.
-- Any package taking a ready service is trivially testable: construct it over
-  an in-memory fake, call it, assert — no wiring dance.
-- Each domain's Register stays domain-owned: it decides its own routes. main
-  decides nothing except which services exist.
-
-Handlers do three jobs and nothing else: parse HTTP, call the service or
-action, map sentinel errors to statuses via `httpx.StatusFor`, and shape
-`[]db.Todo` into ViewModels before rendering. They never decide policy.
-
-Each handler has one job:
-
-```text
-GET /                    → full Page VM → full document
-POST /todos              → List VM → list fragment
-POST /todos/{id}/toggle  → List VM → list fragment
-DELETE /todos/{id}       → List VM → list fragment
-```
-
-## Actions — Cross-Domain Behavior as Plain Functions
-
-`internal/actions/` holds behaviors that span two or more domains. An action
-is a **plain function over the services it needs** — no registry struct, no
-state, no storage of its own:
-
-```go
-func CompleteAll(ctx context.Context, todos *todo.Service) ([]db.Todo, error)
-func ClearCompleted(ctx context.Context, todos *todo.Service) ([]db.Todo, error)
-```
-
-**Decision: actions take their dependencies as arguments, and that's the
-whole abstraction.**
-
-- The signature documents exactly which domains the behavior touches. When a
-  second domain arrives, the action simply takes both services —
-  `DeleteAccount(ctx, users, todos, userID)` — and stays equally testable.
-- No service-locator struct holding pointers to every service: that would
-  let any action reach everything, hide dependencies, and force tests to
-  wire the world. Function arguments keep the dependency graph in the type
-  system.
-- Actions compose services; they never touch storage directly. If an action
-  starts needing its own queries, the boundary was drawn wrong — move the
-  behavior into the domain service that owns the data.
-
-**When is something an action vs a service method?** A service method
-belongs to one domain and owns its rules. An action is worth its own
-existence only when it composes two or more domain services, or orchestrates
-a workflow neither domain should own alone. Resist promoting single-domain
-logic into actions — that is how pass-through layers are born.
-
-`Register(mux, todos *todo.Service)` at the top of `actions.go` wires the
-action routes (`POST /todos/complete-all`, `POST /todos/clear-completed`).
-It takes the ready services main already built — actions are generic over
-their arguments — and the thin HTTP handlers call the action functions and
-render the fragment. `main.go` calls both `handler.Register` and
-`actions.Register` with the same service instance.
-
-**Decision: one shared `httpx.StatusFor`, not a switch per package.**
-
-Sentinel errors are package-qualified values (`todo.ErrNotFound`), so one
-total function over all of them — `internal/httpx.StatusFor` — is a single
-table of "which failure maps to which status" instead of drifting copies.
-The guardrails that keep it healthy: it stays one flat switch (every case
-maps a sentinel, unknown → 500), it holds no per-domain logic, and a new
-domain's sentinels each get one case. A forgotten case falls to 500 — and
-the integration tests' error-path assertions (422, 404) catch exactly that.
-
-**Testing an action is the cheapest test in the codebase:** the action is a
-plain function, so its test constructs the shared fake
-(`internal/todo/todotest`), calls the function, and asserts on domain
-values — no database, no HTTP. The action's HTTP endpoints are additionally
-covered by `TestActionHandlers` (same fake, `testutil.Do`), so wiring and
-rendering are proven in milliseconds too; the SQL behind them runs in the
-real-PG contract test like every other route.
-
-## Transactions
-
-sqlc generates `Queries.WithTx(tx)`. For a cross-domain operation, start one
-transaction, create transaction-bound queries, and call all operations through
-those queries:
-
-```go
-func withTx(ctx context.Context, pool *pgxpool.Pool, fn func(*db.Queries) error) error {
-    tx, err := pool.Begin(ctx)
-    if err != nil {
-        return err
-    }
-    defer tx.Rollback(ctx)
-
-    if err := fn(db.New(pool).WithTx(tx)); err != nil {
-        return err
-    }
-    return tx.Commit(ctx)
-}
-```
-
-Then a named cross-domain operation stays a plain function:
-
-```go
-func DeleteUser(ctx context.Context, pool *pgxpool.Pool, userID int64) error {
-    return withTx(ctx, pool, func(q *db.Queries) error {
-        if err := q.DeleteTodosByUser(ctx, userID); err != nil {
-            return err
-        }
-        return q.DeleteUser(ctx, userID)
-    })
-}
-```
-
-## Testing
-
-Testing is organized in two tiers. Tier 1 covers the behavior; Tier 2 proves http bridge and SQL.
-
-### Tier 1 — unit tests (no database)
-
-`internal/todo/service_test.go` runs under plain `go test ./...` with no
-Docker. It substitutes an in-memory fake `TodoStore`, so validation, adding,
-toggling, deletion, error wrapping, and empty states are all testable in
-milliseconds:
-
-```bash
-go test ./...       # unit tests only — no Docker, no env vars
-go test -race ./...
-go vet ./...
-```
-
-**This is where behavioral coverage lives.** If a new rule belongs to the
-service, it gets a test here — not in an HTTP test, not in a browser test.
-
-**Decision: one fake per domain, in an `Xtest` package.**
-`internal/todo/todotest.FakeTodos` is the single in-memory `TodoStore` used
-by every package's tests — the todo service's, the actions', and any future
-action that takes the service. It lives in a regular package instead of a
-`_test.go` file because Go test files cannot be imported; without this,
-every package's tests would redeclare the same fake. The knock-on rule:
-tests using it are black-box (`package todo_test`), because a package's own
-test binary cannot import anything that imports the package under test —
-black-box tests have no such restriction. Each new domain gets the same
-pair: `store.go` (seam) + `Xtest/` (shared fake), and the fakes carry their
-own compile-time `var _ todo.TodoStore = (*FakeTodos)(nil)` check, mirroring
-the real store's lockstep with the interface.
-
-Tier 1 also covers the handler's one pure decision — the sentinel→status
-mapping — through the integration test's 422/404 cases rather than a
-dedicated table test; the mapping is a single `switch` in `statusFor`.
-
-### Tier 2 — integration test (real PostgreSQL)
-
-`TestHandlerHTTPContract` in `internal/todo/handler/handler_integration_test.go`
-is skipped unless `INTEGRATION_TESTS=1`. Run it with a disposable container:
-
-```bash
-mise run test-integration  # starts postgres:16-alpine on :5432, runs tests, cleans up
-```
-
-There is exactly **one** integration test, and it exists to prove what the
-in-memory fake cannot: that the bridge works against the real stack. A
-subtest roundtrip (add → toggle → delete) sends real requests through the
-registered routes and asserts the *visible effect of each step* — the new
-todo appears in the fragment, the toggled one is rendered done, the empty
-state appears after deletion — plus the error statuses (blank title → 422,
-missing todo → 404).
-
-What it deliberately does **not** do:
-
-- **No golden files.** It never asserts the exact HTML templates produce —
-  only that the service's data reaches the rendered body. Asserting exact
-  markup makes every cosmetic template tweak break tests for no reason.
-- **No replay of service behavior.** The service matrix lives in Tier 1;
-  duplication between tiers means a test asserts something the layer below
-  already proved.
-
-Note that the SQL still runs here — every subtest executes real queries
-through the real app path. If a generated query breaks, this test fails.
-Per-query store tests are only worth adding when a query's correctness
-depends on PostgreSQL semantics a fake cannot mirror: joins, upserts,
-ordering guarantees, RLS, triggers, transactions.
-
 
 ## Folder Structure
 
 ```text
 go-htmx-paradim-inspo/
-├── main.go
+├── main.go                       # composition root: pool, queries, sessions, mux
 ├── mise.toml
 ├── sqlc.yaml
 ├── internal/db/
-│   ├── schema.sql
-│   ├── queries.sql
-│   └── sqlc/                         # generated code
-├── internal/testutil/
-│   └── testutil.go                   # test-only helpers: Do, WantCode, WantBody
-├── internal/httpx/
-│   └── httpx.go                      # StatusFor: all domains' sentinels → HTTP statuses
-├── internal/actions/
-│   ├── actions.go                    # cross-domain actions + Register (action routes)
-│   └── actions_test.go               # plain function tests + fake-store HTTP tests
-├── internal/todo/
-│   ├── service.go                    # service logic, returns domain []db.Todo
-│   ├── todotest/
-│   │   └── todotest.go               # FakeTodos: the shared in-memory TodoStore
-│   ├── vm.go                         # HTMX ViewModels, built by handlers
-│   ├── service_test.go               # unit tests (black-box) over the shared fake
-│   └── handler/
-│       ├── handler.go                # Register + handlers + error→status mapping
-│       └── handler_integration_test.go  # single HTTP contract test (real PG)
+│   ├── schema.sql                # users, sessions, todos (user_id FK)
+│   ├── queries.sql               # user-scoped todo queries
+│   └── sqlc/                     # generated code
+├── internal/handlers/
+│   ├── handlers.go               # Deps + CurrentUserID + ParseID (no routes)
+│   └── todo/
+│       └── todo.go               # todo Register + handlers (takes Deps)
+├── internal/handlertest/
+│   └── handlertest.go            # shared test-only helpers (never imported by prod)
+├── internal/integration/
+│   ├── setup_test.go             # whole-app composition (mirror of main.go) + seeding
+│   └── todo_test.go              # integration tests: HTTP response + DB state
 └── templates/
-    ├── todos.templ
-    └── todos_templ.go                # generated
+    ├── todos.templ               # Page(todos)/List(todos)/Item(t) — no view models
+    └── todos_templ.go            # generated
 ```
 
-When adding another domain, add another vertical slice:
-
-```text
-internal/user/service.go
-internal/user/store.go       # its own store interface for the persistence seam
-internal/user/vm.go
-internal/user/handler/handler.go
-```
-
-The user service can receive the same `*db.Queries` — it satisfies whichever
-domain store interfaces exist. SQL remains centralized in `internal/db`,
-while domain routes and service behavior stay in their own slice. Test
-helpers (`Do`, `WantCode`, `WantBody`) live in `internal/testutil` and are
-shared across domains. Behaviors spanning the user and todo domains become
-plain functions in `internal/actions` — `DeleteAccount(ctx, users, todos, id)`
-— whose tests are plain function tests over fakes.
+A new domain is a new subpackage: `internal/handlers/users/` with its own
+`Register(mux, handlers.Deps)` called from `main.go` and from the
+integration `setup`, importing the root for `Deps` and helpers. Its tests
+join the integration suite next to `todo_test.go`, reusing `handlertest`
+and the same request-then-assert-DB pattern. `Truncate` takes the table
+list from the caller, since the suite knows which tables exist.
 
 ## Mise Tasks
 
-`mise.toml` pins Go, sqlc, templ, and Atlas versions:
-
 ```bash
-mise run generate        # sqlc generate && templ generate
-muse run db              # runs local pg via docker
-mise run db-plan         # atlas dry-run
-mise run db-apply        # atlas schema apply
-mise run db-validate     # atlas schema validate
+mise run db              # runs local pg via docker
+mise run db-plan         # psqldef dry-run
+mise run db-apply        # psqldef apply
+mise run db-validate     # offline parse + idempotency check
 mise run test            # go test ./...
 mise run test-race       # go test -race ./...
-mise run test-integration# spins up disposable Postgres, runs integration tests, cleans up
+mise run test-integration# disposable Postgres, runs integration tests, cleans up
 mise run check           # generate + vet + test
-mise run dev             # go run .
+mise run dev             # starts the dev db, then go run .
 ```

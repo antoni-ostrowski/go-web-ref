@@ -7,52 +7,80 @@ package db
 
 import (
 	"context"
+
+	"github.com/google/uuid"
 )
 
 const createTodo = `-- name: CreateTodo :one
-INSERT INTO todos (title)
-VALUES ($1)
-RETURNING id, title, done
+INSERT INTO todos (user_id, title)
+VALUES ($1, $2)
+RETURNING id, user_id, title, done
 `
 
-func (q *Queries) CreateTodo(ctx context.Context, title string) (Todo, error) {
-	row := q.db.QueryRow(ctx, createTodo, title)
+type CreateTodoParams struct {
+	UserID uuid.UUID
+	Title  string
+}
+
+func (q *Queries) CreateTodo(ctx context.Context, arg CreateTodoParams) (Todo, error) {
+	row := q.db.QueryRow(ctx, createTodo, arg.UserID, arg.Title)
 	var i Todo
-	err := row.Scan(&i.ID, &i.Title, &i.Done)
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Title,
+		&i.Done,
+	)
 	return i, err
 }
 
 const deleteTodo = `-- name: DeleteTodo :exec
 DELETE FROM todos
-WHERE id = $1
+WHERE id = $1 AND user_id = $2
 `
 
-func (q *Queries) DeleteTodo(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, deleteTodo, id)
+type DeleteTodoParams struct {
+	ID     int64
+	UserID uuid.UUID
+}
+
+func (q *Queries) DeleteTodo(ctx context.Context, arg DeleteTodoParams) error {
+	_, err := q.db.Exec(ctx, deleteTodo, arg.ID, arg.UserID)
 	return err
 }
 
 const getTodo = `-- name: GetTodo :one
-SELECT id, title, done
+SELECT id, user_id, title, done
 FROM todos
-WHERE id = $1
+WHERE id = $1 AND user_id = $2
 `
 
-func (q *Queries) GetTodo(ctx context.Context, id int64) (Todo, error) {
-	row := q.db.QueryRow(ctx, getTodo, id)
+type GetTodoParams struct {
+	ID     int64
+	UserID uuid.UUID
+}
+
+func (q *Queries) GetTodo(ctx context.Context, arg GetTodoParams) (Todo, error) {
+	row := q.db.QueryRow(ctx, getTodo, arg.ID, arg.UserID)
 	var i Todo
-	err := row.Scan(&i.ID, &i.Title, &i.Done)
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Title,
+		&i.Done,
+	)
 	return i, err
 }
 
 const listTodos = `-- name: ListTodos :many
-SELECT id, title, done
+SELECT id, user_id, title, done
 FROM todos
+WHERE user_id = $1
 ORDER BY id
 `
 
-func (q *Queries) ListTodos(ctx context.Context) ([]Todo, error) {
-	rows, err := q.db.Query(ctx, listTodos)
+func (q *Queries) ListTodos(ctx context.Context, userID uuid.UUID) ([]Todo, error) {
+	rows, err := q.db.Query(ctx, listTodos, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +88,12 @@ func (q *Queries) ListTodos(ctx context.Context) ([]Todo, error) {
 	var items []Todo
 	for rows.Next() {
 		var i Todo
-		if err := rows.Scan(&i.ID, &i.Title, &i.Done); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Title,
+			&i.Done,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -73,17 +106,23 @@ func (q *Queries) ListTodos(ctx context.Context) ([]Todo, error) {
 
 const updateTodo = `-- name: UpdateTodo :exec
 UPDATE todos
-SET title = $2, done = $3
-WHERE id = $1
+SET title = $3, done = $4
+WHERE id = $1 AND user_id = $2
 `
 
 type UpdateTodoParams struct {
-	ID    int64
-	Title string
-	Done  bool
+	ID     int64
+	UserID uuid.UUID
+	Title  string
+	Done   bool
 }
 
 func (q *Queries) UpdateTodo(ctx context.Context, arg UpdateTodoParams) error {
-	_, err := q.db.Exec(ctx, updateTodo, arg.ID, arg.Title, arg.Done)
+	_, err := q.db.Exec(ctx, updateTodo,
+		arg.ID,
+		arg.UserID,
+		arg.Title,
+		arg.Done,
+	)
 	return err
 }
