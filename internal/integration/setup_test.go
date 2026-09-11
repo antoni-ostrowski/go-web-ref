@@ -5,10 +5,12 @@ import (
 	"net/http"
 	"testing"
 
+	db "go-htmx-todo/internal/db/sqlc"
 	"go-htmx-todo/internal/handlers"
+	"go-htmx-todo/internal/handlers/auth"
+	"go-htmx-todo/internal/handlers/static"
 	"go-htmx-todo/internal/handlers/todo"
 	"go-htmx-todo/internal/handlertest"
-	db "go-htmx-todo/internal/db/sqlc"
 
 	"github.com/alexedwards/scs/pgxstore"
 	"github.com/alexedwards/scs/v2"
@@ -23,13 +25,18 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	return handlertest.Pool(t, schemaFile)
 }
 
-// seedUser inserts a user with raw SQL; no user queries exist yet.
+// seedUser inserts a user with a real bcrypt hash for "password123", so the
+// seeded user can actually sign in.
 func seedUser(t *testing.T, p *pgxpool.Pool) uuid.UUID {
 	t.Helper()
+	hash, err := auth.HashPassword("password123")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
 	id := uuid.New()
 	if _, err := p.Exec(context.Background(),
-		`INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'test')`,
-		id, "test-"+id.String()); err != nil {
+		`INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3)`,
+		id, "test-"+id.String(), hash); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 	return id
@@ -47,6 +54,8 @@ func setup(t *testing.T) (app http.Handler, q *db.Queries, sessions *scs.Session
 	sessions.Store = pgxstore.New(p)
 	mux := http.NewServeMux()
 	todo.Register(mux, handlers.Deps{Q: q, Sessions: sessions})
+	auth.Register(mux, handlers.Deps{Q: q, Sessions: sessions})
+	static.Register(mux, "../../static")
 	return sessions.LoadAndSave(mux), q, sessions, user
 }
 

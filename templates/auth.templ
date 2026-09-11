@@ -1,0 +1,52 @@
+package templates
+
+templ authShell(title string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>{ title } - todos</title>
+			<style>
+				body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+				form { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; }
+				input { padding: 0.5rem; }
+				.error { color: #c00; }
+			</style>
+		</head>
+		<body>
+			<h1>{ title }</h1>
+			{ children... }
+		</body>
+	</html>
+}
+
+// Signup is FULL page. POST /signup re-renders it with errMsg on failure.
+templ Signup(errMsg string) {
+	@authShell("sign up") {
+		if errMsg != "" {
+			<p class="error">{ errMsg }</p>
+		}
+		<form method="post" action="/signup">
+			<input name="username" placeholder="username" required autocomplete="username"/>
+			<input name="password" type="password" placeholder="password (min 8 characters)" required autocomplete="new-password"/>
+			<button type="submit">Sign up</button>
+		</form>
+		<p>already have an account? <a href="/signin">sign in</a></p>
+	}
+}
+
+// Signin is FULL page. POST /signin re-renders it with errMsg on failure.
+templ Signin(errMsg string) {
+	@authShell("sign in") {
+		if errMsg != "" {
+			<p class="error">{ errMsg }</p>
+		}
+		<form method="post" action="/signin">
+			<input name="username" placeholder="username" required autocomplete="username"/>
+			<input name="password" type="password" placeholder="password" required autocomplete="current-password"/>
+			<button type="submit">Sign in</button>
+		</form>
+		<p>no account yet? <a href="/signup">sign up</a></p>
+	}
+}

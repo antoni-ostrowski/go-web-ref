@@ -5,13 +5,13 @@ package handlers
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 
 	db "go-htmx-todo/internal/db/sqlc"
 
 	"github.com/alexedwards/scs/v2"
-	"github.com/google/uuid"
 )
 
 // Deps carries process-wide dependencies, built once by the caller.
@@ -21,13 +21,17 @@ type Deps struct {
 	Sessions *scs.SessionManager
 }
 
-// CurrentUserID returns the session user, or uuid.Nil when signed out.
-func CurrentUserID(r *http.Request, d Deps) uuid.UUID {
-	id, err := uuid.Parse(d.Sessions.GetString(r.Context(), "user_id"))
-	if err != nil {
-		return uuid.Nil
+// WriteError logs err with request context and renders it. 4xx bodies carry
+// the message (client-caused, safe); 5xx bodies stay generic while the real
+// error goes to the log.
+func WriteError(w http.ResponseWriter, r *http.Request, err error, code int) {
+	slog.Error("handler error",
+		"method", r.Method, "path", r.URL.Path, "status", code, "err", err)
+	if code >= 500 {
+		http.Error(w, http.StatusText(code), code)
+		return
 	}
-	return id
+	http.Error(w, err.Error(), code)
 }
 
 // ParseID reads the {id} path value as a positive integer.

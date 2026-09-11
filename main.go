@@ -7,9 +7,11 @@ import (
 	"os"
 	"time"
 
-	"go-htmx-todo/internal/handlers"
-	"go-htmx-todo/internal/handlers/todo"
 	db "go-htmx-todo/internal/db/sqlc"
+	"go-htmx-todo/internal/handlers"
+	"go-htmx-todo/internal/handlers/auth"
+	"go-htmx-todo/internal/handlers/static"
+	"go-htmx-todo/internal/handlers/todo"
 
 	"github.com/alexedwards/scs/pgxstore"
 	"github.com/alexedwards/scs/v2"
@@ -40,6 +42,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	todo.Register(mux, deps)
+	auth.Register(mux, deps)
+	static.Register(mux, "static")
 
 	slog.Info("listening", "address", "http://localhost:8080")
 	if err := http.ListenAndServe(":8080", sessions.LoadAndSave(mux)); err != nil {

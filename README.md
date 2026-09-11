@@ -30,8 +30,10 @@ main.go
   wraps the mux with sessions.LoadAndSave
 
 handlers
-  root: Deps + CurrentUserID + ParseID — shared wiring, no routes
+  root: Deps + ParseID + WriteError — shared wiring, no routes
   todo: the todo domain's routes and handlers (takes Deps as one arg)
+  auth: sign-up/sign-in/sign-out + WithAuth/RequireAuth + hashing helpers
+  static: serves ./static at /static (no listings, traversal rejected)
 
 sqlc
   owns SQL, generated DB types, and generated query methods
@@ -60,7 +62,7 @@ func handleAdd(d Deps) http.HandlerFunc { // in handlers/todo
 	return func(w http.ResponseWriter, r *http.Request) {
 		title := strings.TrimSpace(r.FormValue("title"))
 		if title == "" {
-			http.Error(w, "title cannot be empty", http.StatusUnprocessableEntity)
+			handlers.WriteError(w, r, errors.New("title cannot be empty"), http.StatusUnprocessableEntity)
 			return
 		}
 		// ... d.Q.CreateTodo, d.Q.ListTodos, templates.List(todos).Render
@@ -75,9 +77,10 @@ Rules:
   field here — built once in `main`, closed over in `Register` — instead of
   a new parameter threaded through every factory.
 - **Keep it dumb.** Nothing constructed inside the handlers package, and
-  never request-scoped data: the acting user still comes from the session
-  per request via `CurrentUserID(r, d)`. Don't add fields speculatively —
-  `slog.Default()` already covers logging with nothing passed at all.
+  never request-scoped data: identity comes only from the auth middleware
+  as `AuthData`, never from reading the session in a handler. Don't add
+  fields speculatively — `slog.Default()` already covers logging with
+  nothing passed at all.
 - **Concrete by default, interfaces where swapping is real.** `*db.Queries`
   and `*scs.SessionManager` stay concrete because tests exercise the real
   thing — an interface there would add a seam nobody swaps. Reach for an
@@ -98,8 +101,16 @@ type Charger interface {
   next to the query that produces it.
 - **No view models.** `templates.Page([]db.Todo)` and
   `templates.List([]db.Todo)` take domain rows directly.
+- **Errors go through `handlers.WriteError`.** It slogs the error with
+  method, path, and status, then renders: 4xx bodies carry the message,
+  5xx bodies stay generic (`Internal Server Error`) with details in the log.
 
-## HTTP — One Register, Short Handlers
+## HTTP — One Register Per Domain
+
+`internal/handlers/todo/todo.go` holds the todo routes,
+`internal/handlers/auth/auth.go` holds sign-up/sign-in/sign-out plus the
+gates; the root `internal/handlers/handlers.go` holds only `Deps`,
+`ParseID`, and `WriteError`:
 
 ```text
 GET /{$}                    → full page
@@ -108,12 +119,27 @@ POST /todos/{id}/toggle     → toggle         → list fragment
 DELETE /todos/{id}          → delete         → list fragment (idempotent)
 POST /todos/complete-all    → complete all   → list fragment
 POST /todos/clear-completed → clear completed → list fragment
+GET+POST /signup            → sign-up page / create user → redirect /
+GET+POST /signin            → sign-in page / log in     → redirect /
+POST /signout               → log out                   → redirect /signin
 ```
 
-`handlers.CurrentUserID(r, d)` is the one place that reads the session.
-Sign-in does not exist yet: a request without a session user yields
-`uuid.Nil`, so anonymous visitors see an empty list and mutations fail on
-the `users(id)` foreign key. `TestAnonymous` locks this behavior in.
+`auth.WithAuth` is the one place that reads the session for identity: it
+supplies `AuthData` (zero value when anonymous) to the page, while
+`auth.RequireAuth` additionally redirects anonymous mutation requests —
+303 to `/signin` for plain requests, 401 with `HX-Redirect: /signin` for
+htmx ones — logging each redirect. `TestAnonymous` and
+`TestRequireAuth_HtmxRedirect` lock both behaviors in.
+
+## Auth
+
+Username + password, bcrypt-hashed (`auth.HashPassword` /
+`auth.CheckPassword`), no auth service — plain helpers. Sign-up and sign-in
+`RenewToken` (no session fixation), then store `user_id` and `username` in
+the session; sign-out destroys it. Failures re-render the form with a
+message: blank/short credentials → 422, taken username → 409, bad
+credentials → 401 (same message for unknown user and wrong password, so
+usernames can't be probed).
 
 ## Sessions
 
@@ -182,7 +208,8 @@ integration suite (`Pool`, `Truncate`, `LoginAs`, `Do`, `WantCode`,
 wiring `main.go` performs — plus suite-specific seeding and state-reading:
 
 - `testPool` — one-line wrapper fixing the schema path for `handlertest.Pool`.
-- `seedUser` inserts a user with raw SQL (no user queries exist yet).
+- `seedUser` inserts a user with a real bcrypt hash (`password123`), so the
+  seeded user can actually sign in.
 - `setup` returns the real app (every domain's `Register` + `LoadAndSave`),
   the real `*db.Queries` for DB assertions, the session manager, and a
   fresh user. When a new domain lands, register it here exactly as `main.go`
@@ -202,7 +229,10 @@ ordering dependency:
   changes nothing (idempotent, documented)
 - complete-all marks all done (empty is a no-op); clear-completed keeps
   only open todos
-- anonymous: page renders empty, mutating fails visibly
+- anonymous: page renders sign-in links, mutating redirects to sign-in
+- auth: sign-up stores a hash (never plaintext) and logs in; duplicate is
+  409; blank/short is 422; sign-in works and rejects bad credentials with
+  401; sign-out destroys the session
 
 The pattern per test is always the same — request, assert status + body
 fragment, assert DB:
@@ -223,20 +253,27 @@ go-htmx-paradim-inspo/
 ├── sqlc.yaml
 ├── internal/db/
 │   ├── schema.sql                # users, sessions, todos (user_id FK)
-│   ├── queries.sql               # user-scoped todo queries
+│   ├── queries.sql               # user + user-scoped todo queries
 │   └── sqlc/                     # generated code
 ├── internal/handlers/
-│   ├── handlers.go               # Deps + CurrentUserID + ParseID (no routes)
-│   └── todo/
-│       └── todo.go               # todo Register + handlers (takes Deps)
+│   ├── handlers.go               # Deps + ParseID + WriteError
+│   ├── todo/
+│   │   └── todo.go               # todo Register + handlers (takes Deps)
+│   └── auth/
+│       └── auth.go               # auth Register + handlers + hashing helpers
 ├── internal/handlertest/
 │   └── handlertest.go            # shared test-only helpers (never imported by prod)
 ├── internal/integration/
 │   ├── setup_test.go             # whole-app composition (mirror of main.go) + seeding
-│   └── todo_test.go              # integration tests: HTTP response + DB state
+│   ├── todo_test.go              # todo tests: HTTP response + DB state
+│   ├── auth_test.go              # auth tests: HTTP response + DB state
+│   └── static_test.go            # static tests: content type, no listing/traversal
+├── static/
+│   └── js/htmx.min.js            # vendored htmx (no CDN dependency)
 └── templates/
-    ├── todos.templ               # Page(todos)/List(todos)/Item(t) — no view models
-    └── todos_templ.go            # generated
+    ├── todos.templ               # Page(todos, username)/List(todos)/Item(t)
+    ├── auth.templ                # Signup(errMsg)/Signin(errMsg)
+    └── *_templ.go                # generated
 ```
 
 A new domain is a new subpackage: `internal/handlers/users/` with its own

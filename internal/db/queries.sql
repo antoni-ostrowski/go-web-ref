@@ -1,3 +1,18 @@
+-- name: CreateUser :one
+INSERT INTO users (id, username, password_hash)
+VALUES ($1, $2, $3)
+RETURNING id, username, password_hash, created_at;
+
+-- name: GetUserByUsername :one
+SELECT id, username, password_hash, created_at
+FROM users
+WHERE username = $1;
+
+-- name: GetUserById :one
+SELECT id, username, password_hash, created_at
+FROM users
+WHERE id = $1;
+
 -- name: ListTodos :many
 SELECT id, user_id, title, done
 FROM todos

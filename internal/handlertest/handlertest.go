@@ -93,6 +93,17 @@ func LoginAs(t *testing.T, sessions *scs.SessionManager, userID uuid.UUID) *http
 // urlencoded (what HTMX posts look like); cookie carries the session.
 func Do(t *testing.T, app http.Handler, method, target string, form url.Values, cookie *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
+	return doReq(t, app, method, target, form, cookie, nil)
+}
+
+// DoHtmx is Do with HX-Request set, mimicking a real htmx-issued request.
+func DoHtmx(t *testing.T, app http.Handler, method, target string, form url.Values, cookie *http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	return doReq(t, app, method, target, form, cookie, map[string]string{"HX-Request": "true"})
+}
+
+func doReq(t *testing.T, app http.Handler, method, target string, form url.Values, cookie *http.Cookie, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
 	var body io.Reader
 	if form != nil {
 		body = strings.NewReader(form.Encode())
@@ -100,6 +111,9 @@ func Do(t *testing.T, app http.Handler, method, target string, form url.Values, 
 	req := httptest.NewRequest(method, target, body)
 	if form != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	if cookie != nil {
 		req.AddCookie(cookie)

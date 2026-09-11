@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"testing"
 
-	"go-htmx-todo/internal/handlertest"
 	db "go-htmx-todo/internal/db/sqlc"
+	"go-htmx-todo/internal/handlertest"
 
 	"github.com/google/uuid"
 )
@@ -253,16 +253,41 @@ func TestClearCompleted(t *testing.T) {
 	}
 }
 
-// Anonymous requests render empty; mutations fail on the users FK.
+// Anonymous htmx requests get 401 + HX-Redirect so the client navigates.
+func TestRequireAuth_HtmxRedirect(t *testing.T) {
+	app, _, _, _ := setup(t)
+
+	rec := handlertest.DoHtmx(t, app, http.MethodPost, "/todos", url.Values{"title": {"x"}}, nil)
+	handlertest.WantCode(t, rec, http.StatusUnauthorized)
+	if h := rec.Header().Get("HX-Redirect"); h != "/signin" {
+		t.Fatalf("HX-Redirect = %q, want /signin", h)
+	}
+}
+
+// Authed htmx requests pass through to the handler.
+func TestRequireAuth_HtmxAuthed(t *testing.T) {
+	app, _, sessions, user := setup(t)
+	cookie := handlertest.LoginAs(t, sessions, user)
+
+	rec := handlertest.DoHtmx(t, app, http.MethodPost, "/todos", url.Values{"title": {"via htmx"}}, cookie)
+	handlertest.WantCode(t, rec, http.StatusOK)
+	handlertest.WantBody(t, rec, "via htmx")
+}
+
+// Anonymous requests see sign-in links; mutations redirect to sign-in.
 func TestAnonymous(t *testing.T) {
 	app, q, _, _ := setup(t)
 
 	rec := handlertest.Do(t, app, http.MethodGet, "/", nil, nil)
 	handlertest.WantCode(t, rec, http.StatusOK)
-	handlertest.WantBody(t, rec, "no todos yet")
+	handlertest.WantBody(t, rec, "no todos yet", "/signin")
+	handlertest.WantNoBody(t, rec, `hx-post="/todos"`)
 
 	rec = handlertest.Do(t, app, http.MethodPost, "/todos", url.Values{"title": {"x"}}, nil)
-	handlertest.WantCode(t, rec, http.StatusInternalServerError)
+	handlertest.WantCode(t, rec, http.StatusSeeOther)
+	if loc := rec.Header().Get("Location"); loc != "/signin" {
+		t.Fatalf("location = %q, want /signin", loc)
+	}
 
 	if todos := listDB(t, q, uuid.Nil); len(todos) != 0 {
 		t.Fatalf("db = %#v, want empty", todos)

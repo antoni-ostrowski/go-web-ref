@@ -63,6 +63,6 @@ echo "dev db ready on localhost:5432 (postgres/postgres, db: todos)"
 """
 
 [tasks.dev]
-description = "Run the web app (starts the dev Postgres container first)"
-depends = ["db"]
+description = "Run the web app (starts dev Postgres and applies schema first)"
+depends = ["db", "db-apply"]
 run = "go run ."

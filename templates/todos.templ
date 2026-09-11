@@ -3,15 +3,16 @@ package templates
 import db "go-htmx-todo/internal/db/sqlc"
 import "fmt"
 
-// Page is FULL page. Only the GET / handler uses it.
-templ Page(todos []db.Todo) {
+// Page is FULL page. Only the GET / handler uses it. username is "" when
+// signed out, and then the page links to sign-in instead of the todo form.
+templ Page(todos []db.Todo, username string) {
 	<!DOCTYPE html>
 	<html lang="en">
 		<head>
 			<meta charset="UTF-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 			<title>Todos - minimal</title>
-			<script src="https://unpkg.com/htmx.org@1.9.12"></script>
+			<script src="/static/js/htmx.min.js"></script>
 			<style>
 				body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
 				#todo-list { list-style: none; padding: 0; }
@@ -23,10 +24,18 @@ templ Page(todos []db.Todo) {
 		</head>
 		<body>
 			<h1>todos</h1>
-			<form hx-post="/todos" hx-target="#todo-list" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.reset()">
-				<input name="title" placeholder="What needs to be done?" required autocomplete="off"/>
-				<button type="submit">Add</button>
-			</form>
+			if username != "" {
+				<p>signed in as { username }</p>
+				<form method="post" action="/signout">
+					<button type="submit">sign out</button>
+				</form>
+				<form hx-post="/todos" hx-target="#todo-list" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.reset()">
+					<input name="title" placeholder="What needs to be done?" required autocomplete="off"/>
+					<button type="submit">Add</button>
+				</form>
+			} else {
+				<p><a href="/signin">sign in</a> or <a href="/signup">sign up</a> to manage todos</p>
+			}
 			@List(todos)
 			<p style="color:#888; font-size:0.9rem;">Full page via GET /. Fragments via POST/DELETE /todos.</p>
 		</body>
