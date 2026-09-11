@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	db "go-htmx-todo/internal/db/sqlc"
@@ -46,7 +49,25 @@ func main() {
 	static.Register(mux, "static")
 
 	slog.Info("listening", "address", "http://localhost:8080")
-	if err := http.ListenAndServe(":8080", sessions.LoadAndSave(mux)); err != nil {
-		slog.Error("server stopped", "error", err)
+	srv := &http.Server{
+		Addr:              ":8080",
+		Handler:           sessions.LoadAndSave(mux),
+		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("server error", "err", err)
+		}
+	}()
+
+	<-ctx.Done()
+	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdown); err != nil {
+		slog.Error("shutdown error", "err", err)
+	}
+	slog.Info("stopped")
 }
