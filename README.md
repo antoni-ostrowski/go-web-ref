@@ -139,7 +139,10 @@ Username + password, bcrypt-hashed (`auth.HashPassword` /
 the session; sign-out destroys it. Failures re-render the form with a
 message: blank/short credentials → 422, taken username → 409, bad
 credentials → 401 (same message for unknown user and wrong password, so
-usernames can't be probed).
+usernames can't be probed). Sign-up, sign-in, and sign-out responses carry
+`Clear-Site-Data: "cache"` so browsers prune origin cache at auth
+transitions instead of showing stale signed-in/out pages on back-button;
+page shells additionally reload on bfcache restore (`pageshow`).
 
 ## Sessions
 
@@ -289,6 +292,7 @@ go-htmx-paradim-inspo/
 │   ├── css/app.css              # built output (gitignored, `mise run css`)
 │   └── js/htmx.min.js            # vendored htmx (no CDN dependency)
 └── templates/
+    ├── layout.templ              # Layout(title): single page shell
     ├── todos.templ               # Page(todos, username)/List(todos)/Item(t)
     ├── auth.templ                # Signup(errMsg)/Signin(errMsg)
     └── *_templ.go                # generated

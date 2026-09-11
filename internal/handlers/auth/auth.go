@@ -85,6 +85,7 @@ func handleSignup(d handlers.Deps) http.HandlerFunc {
 			handlers.WriteError(w, r, err, http.StatusInternalServerError)
 			return
 		}
+		w.Header().Set("Clear-Site-Data", `"cache"`)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	}
 }
@@ -117,6 +118,7 @@ func handleSignin(d handlers.Deps) http.HandlerFunc {
 			handlers.WriteError(w, r, err, http.StatusInternalServerError)
 			return
 		}
+		w.Header().Set("Clear-Site-Data", `"cache"`)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	}
 }
@@ -127,6 +129,7 @@ func handleSignout(d handlers.Deps) http.HandlerFunc {
 			handlers.WriteError(w, r, err, http.StatusInternalServerError)
 			return
 		}
+		w.Header().Set("Clear-Site-Data", `"cache"`)
 		http.Redirect(w, r, "/signin", http.StatusSeeOther)
 	}
 }

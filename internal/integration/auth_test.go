@@ -3,6 +3,7 @@ package integration_test
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 
@@ -31,7 +32,7 @@ func seedNamedUser(t *testing.T, username string) uuid.UUID {
 
 // doSignup posts the signup form, returning the response and the session
 // cookie when one was set.
-func doSignup(t *testing.T, app http.Handler, username, password string) (*http.Cookie, int, string) {
+func doSignup(t *testing.T, app http.Handler, username, password string) (*http.Cookie, *httptest.ResponseRecorder) {
 	t.Helper()
 	rec := handlertest.Do(t, app, http.MethodPost, "/signup",
 		url.Values{"username": {username}, "password": {password}}, nil)
@@ -39,7 +40,7 @@ func doSignup(t *testing.T, app http.Handler, username, password string) (*http.
 	if cookies := rec.Result().Cookies(); len(cookies) > 0 {
 		cookie = cookies[0]
 	}
-	return cookie, rec.Code, rec.Header().Get("Location")
+	return cookie, rec
 }
 
 func userCount(t *testing.T) int {
@@ -56,9 +57,13 @@ func userCount(t *testing.T) int {
 func TestSignup_CreatesUserAndLogsIn(t *testing.T) {
 	app, q, _, _ := setup(t)
 
-	cookie, code, location := doSignup(t, app, "alice", "password123")
-	if code != http.StatusSeeOther || location != "/" {
-		t.Fatalf("status = %d, location = %q, want 303 to /", code, location)
+	cookie, rec := doSignup(t, app, "alice", "password123")
+	handlertest.WantCode(t, rec, http.StatusSeeOther)
+	if loc := rec.Header().Get("Location"); loc != "/" {
+		t.Fatalf("location = %q, want /", loc)
+	}
+	if h := rec.Header().Get("Clear-Site-Data"); h != `"cache"` {
+		t.Fatalf("Clear-Site-Data = %q, want cache prune", h)
 	}
 	if cookie == nil {
 		t.Fatal("no session cookie set on signup")
@@ -75,7 +80,7 @@ func TestSignup_CreatesUserAndLogsIn(t *testing.T) {
 		t.Error("stored hash does not verify")
 	}
 
-	rec := handlertest.Do(t, app, http.MethodPost, "/todos", url.Values{"title": {"first"}}, cookie)
+	rec = handlertest.Do(t, app, http.MethodPost, "/todos", url.Values{"title": {"first"}}, cookie)
 	handlertest.WantCode(t, rec, http.StatusOK)
 	handlertest.WantBody(t, rec, "first")
 
@@ -101,8 +106,8 @@ func TestAuth_Pages(t *testing.T) {
 func TestSignup_Duplicate(t *testing.T) {
 	app, _, _, _ := setup(t)
 
-	if _, code, _ := doSignup(t, app, "alice", "password123"); code != http.StatusSeeOther {
-		t.Fatalf("first signup status = %d, want 303", code)
+	if _, rec := doSignup(t, app, "alice", "password123"); rec.Code != http.StatusSeeOther {
+		t.Fatalf("first signup status = %d, want 303", rec.Code)
 	}
 	rec := handlertest.Do(t, app, http.MethodPost, "/signup",
 		url.Values{"username": {"alice"}, "password": {"password123"}}, nil)
@@ -136,8 +141,8 @@ func TestSignup_Validation(t *testing.T) {
 func TestSignup_TrimsUsername(t *testing.T) {
 	app, q, _, _ := setup(t)
 
-	if _, code, _ := doSignup(t, app, "  bob  ", "password123"); code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want 303", code)
+	if _, rec := doSignup(t, app, "  bob  ", "password123"); rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
 	}
 	if _, err := q.GetUserByUsername(context.Background(), "bob"); err != nil {
 		t.Fatalf("GetUserByUsername(bob): %v", err)
@@ -154,6 +159,9 @@ func TestSignin(t *testing.T) {
 	handlertest.WantCode(t, rec, http.StatusSeeOther)
 	if loc := rec.Header().Get("Location"); loc != "/" {
 		t.Fatalf("location = %q, want /", loc)
+	}
+	if h := rec.Header().Get("Clear-Site-Data"); h != `"cache"` {
+		t.Fatalf("Clear-Site-Data = %q, want cache prune", h)
 	}
 	cookies := rec.Result().Cookies()
 	if len(cookies) == 0 {
@@ -186,15 +194,18 @@ func TestSignin_RejectsBadCredentials(t *testing.T) {
 func TestSignout(t *testing.T) {
 	app, _, _, _ := setup(t)
 
-	cookie, code, _ := doSignup(t, app, "dave", "password123")
-	if code != http.StatusSeeOther || cookie == nil {
-		t.Fatalf("signup failed: status = %d, cookie = %v", code, cookie)
+	cookie, signupRec := doSignup(t, app, "dave", "password123")
+	if signupRec.Code != http.StatusSeeOther || cookie == nil {
+		t.Fatalf("signup failed: status = %d, cookie = %v", signupRec.Code, cookie)
 	}
 
 	rec := handlertest.Do(t, app, http.MethodPost, "/signout", nil, cookie)
 	handlertest.WantCode(t, rec, http.StatusSeeOther)
 	if loc := rec.Header().Get("Location"); loc != "/signin" {
 		t.Fatalf("location = %q, want /signin", loc)
+	}
+	if h := rec.Header().Get("Clear-Site-Data"); h != `"cache"` {
+		t.Fatalf("Clear-Site-Data = %q, want cache prune", h)
 	}
 
 	rec = handlertest.Do(t, app, http.MethodPost, "/todos", url.Values{"title": {"x"}}, cookie)
