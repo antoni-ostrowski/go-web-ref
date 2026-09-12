@@ -22,7 +22,7 @@ import (
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -48,26 +48,39 @@ func main() {
 	auth.Register(mux, deps)
 	static.Register(mux, "static")
 
-	slog.Info("listening", "address", "http://localhost:8080")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           sessions.LoadAndSave(mux),
 		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	srvErr := make(chan error, 1)
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("server error", "err", err)
-		}
+		slog.Info("listening", "address", "http://localhost:8080")
+		srvErr <- srv.ListenAndServe()
 	}()
 
-	<-ctx.Done()
-	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdown); err != nil {
-		slog.Error("shutdown error", "err", err)
+	select {
+	case err := <-srvErr:
+		// Startup failed: nothing to drain, and the pool never served
+		// traffic, so exiting directly is safe.
+		stop()
+		if !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("server error", "err", err)
+			os.Exit(1)
+		}
+	case <-ctx.Done():
+		// First signal: stop listening for more, so a second Ctrl+C
+		// kills immediately. Drain in-flight work within budget.
+		stop()
+		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdown); err != nil {
+			slog.Error("shutdown error", "err", err)
+		}
+		slog.Info("stopped")
 	}
-	slog.Info("stopped")
 }
