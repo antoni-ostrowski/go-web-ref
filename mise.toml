@@ -42,6 +42,7 @@ run = "go vet ./... && go test ./..."
 
 [tasks.db-apply]
 description = "Apply desired schema to dev database (sqldef, declarative)"
+depends = ["db"]
 run = "PGPASSWORD=postgres PGSSLMODE=disable psqldef -U postgres -h localhost -p 5432 todos --apply --enable-drop --file internal/db/schema.sql"
 
 [tasks.db-plan]
@@ -62,15 +63,19 @@ if ! docker ps -q --filter "name=^go-htmx-todo-dev-db$" | grep -q .; then
     -p 5432:5432 postgres:16-alpine
 fi
 for i in $(seq 1 30); do
-  docker exec go-htmx-todo-dev-db pg_isready -U postgres -d todos >/dev/null 2>&1 && break
+  if docker exec go-htmx-todo-dev-db pg_isready -U postgres -d todos >/dev/null 2>&1; then
+    echo "dev db ready on localhost:5432 (postgres/postgres, db: todos)"
+    exit 0
+  fi
   sleep 1
 done
-echo "dev db ready on localhost:5432 (postgres/postgres, db: todos)"
+echo "dev db failed to become ready in 30s" >&2
+exit 1
 """
 
 [tasks.dev]
 description = "Run the web app with hot reload (starts dev Postgres, applies schema)"
-depends = ["db", "db-apply"]
+depends = ["db-apply"]
 run = "air"
 
 [tasks.build]
