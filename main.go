@@ -15,14 +15,38 @@ import (
 	"go-htmx-todo/internal/handlers/auth"
 	"go-htmx-todo/internal/handlers/static"
 	"go-htmx-todo/internal/handlers/todo"
+	"go-htmx-todo/internal/obs"
 
-	"github.com/alexedwards/scs/pgxstore"
-	"github.com/alexedwards/scs/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
 )
 
+const APP_NAME = "go-htmx-template"
+
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
+	otelShutdown, err := obs.SetupOTelSDK(ctx, APP_NAME)
+	if err != nil && !errors.Is(err, obs.ErrNoEndpoint) {
+		stop()
+		slog.Error("setup otel SDK", "error", err)
+		return
+	}
+
+	logger := slog.New(obs.NewLogHandler(APP_NAME))
+	slog.SetDefault(logger)
+	if err != nil {
+		logger.Warn("otel disabled", "reason", "OTEL_EXPORTER_OTLP_ENDPOINT not set")
+	}
+	defer func() {
+		if otelShutdown == nil {
+			return
+		}
+		if err := otelShutdown(context.Background()); err != nil {
+			logger.Error("shutdown otel SDK", "error", err)
+		}
+	}()
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -31,35 +55,34 @@ func main() {
 
 	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
-		slog.Error("create database pool", "error", err)
+		logger.Error("create database pool", "error", err)
 		return
 	}
 	defer pool.Close()
 
-	// Composition root: one Deps, built once, handed to every domain.
-	sessions := scs.New()
-	sessions.Store = pgxstore.New(pool)
-	sessions.Lifetime = 7 * 24 * 60 * time.Minute
+	sessions := auth.NewSessionManager(pool)
 
-	deps := handlers.Deps{Q: db.New(pool), Sessions: sessions}
+	deps := handlers.Deps{
+		Queries:  db.New(pool),
+		Sessions: sessions, Logger: logger,
+		Tel: &handlers.Telemetry{Tracer: otel.Tracer(APP_NAME), Meter: otel.Meter(APP_NAME)},
+	}
 
 	mux := http.NewServeMux()
 	todo.Register(mux, deps)
 	auth.Register(mux, deps)
 	static.Register(mux, "static")
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-
 	srv := &http.Server{
 		Addr:              ":8080",
-		Handler:           sessions.LoadAndSave(mux),
+		Handler:           otelhttp.NewHandler(sessions.LoadAndSave(mux), "server"),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      10 * time.Second,
 	}
 
 	srvErr := make(chan error, 1)
 	go func() {
-		slog.Info("listening", "address", "http://localhost:8080")
+		logger.Info("listening", "address", "http://localhost:8080")
 		srvErr <- srv.ListenAndServe()
 	}()
 
@@ -69,7 +92,7 @@ func main() {
 		// traffic, so exiting directly is safe.
 		stop()
 		if !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("server error", "err", err)
+			logger.Error("server error", "err", err)
 			os.Exit(1)
 		}
 	case <-ctx.Done():
@@ -79,8 +102,8 @@ func main() {
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdown); err != nil {
-			slog.Error("shutdown error", "err", err)
+			logger.Error("shutdown error", "err", err)
 		}
-		slog.Info("stopped")
+		logger.Info("stopped")
 	}
 }

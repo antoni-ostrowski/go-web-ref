@@ -2,3 +2,4 @@
 static/css/app.css
 # Air hot-reload output.
 tmp/
+go-html-todo

@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"testing"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/alexedwards/scs/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel"
 )
 
 const schemaFile = "../db/schema.sql"
@@ -52,9 +54,16 @@ func setup(t *testing.T) (app http.Handler, q *db.Queries, sessions *scs.Session
 	q = db.New(p)
 	sessions = scs.New()
 	sessions.Store = pgxstore.New(p)
+	// No OTel SDK in tests: discard logs, noop tracer/meter (global defaults).
+	d := handlers.Deps{
+		Queries:  q,
+		Sessions: sessions,
+		Logger:   slog.New(slog.DiscardHandler),
+		Tel:      &handlers.Telemetry{Tracer: otel.Tracer("test"), Meter: otel.Meter("test")},
+	}
 	mux := http.NewServeMux()
-	todo.Register(mux, handlers.Deps{Q: q, Sessions: sessions})
-	auth.Register(mux, handlers.Deps{Q: q, Sessions: sessions})
+	todo.Register(mux, d)
+	auth.Register(mux, d)
 	static.Register(mux, "../../static")
 	return sessions.LoadAndSave(mux), q, sessions, user
 }

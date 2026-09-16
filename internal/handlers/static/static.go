@@ -6,13 +6,15 @@ package static
 import (
 	"net/http"
 	"strings"
+
+	"go-htmx-todo/internal/handlers"
 )
 
 // Register serves dir at GET /static/. Directory listings are 404;
 // path traversal is rejected by the file server.
 func Register(mux *http.ServeMux, dir string) {
 	files := http.FileServer(http.Dir(dir))
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.HandlerFunc(
+	handlers.Route(mux, "GET /static/", http.StripPrefix("/static/", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "/") {
 				http.NotFound(w, r)

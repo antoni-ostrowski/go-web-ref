@@ -6,6 +6,9 @@ sqlc = "1.30.0"
 "aqua:sqldef/sqldef/psqldef" = "3.11.20"
 "github:tailwindlabs/tailwindcss" = "v4.3.3"
 
+[env]
+_.file = ".env.local"
+
 [tasks.generate]
 description = "Generate sqlc and templ code"
 run = "sqlc generate && templ generate"
