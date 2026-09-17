@@ -154,7 +154,7 @@ boots the real `server.Run` on a live port to prove main's wiring serves.
 
 ```bash
 go test ./...       # skips without INTEGRATION_TESTS=1
-mise run test-integration  # disposable postgres:16-alpine on :5433, full suite
+mise run test-int  # disposable postgres:16-alpine on :5433, full suite
 ```
 
 ## Folder Structure
@@ -215,6 +215,6 @@ mise run db-apply        # psqldef apply
 mise run db-validate     # offline parse + idempotency check
 mise run test            # go test ./...
 mise run test-race       # go test -race ./...
-mise run test-integration# disposable Postgres, runs integration tests, cleans up
+mise run test-int# disposable Postgres, runs integration tests, cleans up
 mise run check           # generate + vet + test
 ```

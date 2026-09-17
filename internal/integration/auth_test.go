@@ -20,7 +20,10 @@ func seedNamedUser(t *testing.T, username string) uuid.UUID {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	id := uuid.New()
+	id, err := auth.NewUserID()
+	if err != nil {
+		t.Fatalf("new user id: %v", err)
+	}
 	if _, err := testPool(t).Exec(context.Background(),
 		`INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3)`,
 		id, username, hash); err != nil {

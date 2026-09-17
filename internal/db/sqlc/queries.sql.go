@@ -18,8 +18,8 @@ RETURNING id, user_id, title, done
 `
 
 type CreateTodoParams struct {
-	UserID uuid.UUID
-	Title  string
+	UserID uuid.UUID `json:"userId"`
+	Title  string    `json:"title"`
 }
 
 func (q *Queries) CreateTodo(ctx context.Context, arg CreateTodoParams) (Todo, error) {
@@ -41,9 +41,9 @@ RETURNING id, username, password_hash, created_at
 `
 
 type CreateUserParams struct {
-	ID           uuid.UUID
-	Username     string
-	PasswordHash string
+	ID           uuid.UUID `json:"id"`
+	Username     string    `json:"username"`
+	PasswordHash string    `json:"passwordHash"`
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
@@ -64,8 +64,8 @@ WHERE id = $1 AND user_id = $2
 `
 
 type DeleteTodoParams struct {
-	ID     int64
-	UserID uuid.UUID
+	ID     int64     `json:"id"`
+	UserID uuid.UUID `json:"userId"`
 }
 
 func (q *Queries) DeleteTodo(ctx context.Context, arg DeleteTodoParams) error {
@@ -80,8 +80,8 @@ WHERE id = $1 AND user_id = $2
 `
 
 type GetTodoParams struct {
-	ID     int64
-	UserID uuid.UUID
+	ID     int64     `json:"id"`
+	UserID uuid.UUID `json:"userId"`
 }
 
 func (q *Queries) GetTodo(ctx context.Context, arg GetTodoParams) (Todo, error) {
@@ -171,10 +171,10 @@ WHERE id = $1 AND user_id = $2
 `
 
 type UpdateTodoParams struct {
-	ID     int64
-	UserID uuid.UUID
-	Title  string
-	Done   bool
+	ID     int64     `json:"id"`
+	UserID uuid.UUID `json:"userId"`
+	Title  string    `json:"title"`
+	Done   bool      `json:"done"`
 }
 
 func (q *Queries) UpdateTodo(ctx context.Context, arg UpdateTodoParams) error {

@@ -10,21 +10,21 @@ import (
 )
 
 type Session struct {
-	Token  string
-	Data   []byte
-	Expiry pgtype.Timestamptz
+	Token  string             `json:"token"`
+	Data   []byte             `json:"data"`
+	Expiry pgtype.Timestamptz `json:"expiry"`
 }
 
 type Todo struct {
-	ID     int64
-	UserID uuid.UUID
-	Title  string
-	Done   bool
+	ID     int64     `json:"id"`
+	UserID uuid.UUID `json:"userId"`
+	Title  string    `json:"title"`
+	Done   bool      `json:"done"`
 }
 
 type User struct {
-	ID           uuid.UUID
-	Username     string
-	PasswordHash string
-	CreatedAt    pgtype.Timestamptz
+	ID           uuid.UUID          `json:"id"`
+	Username     string             `json:"username"`
+	PasswordHash string             `json:"passwordHash"`
+	CreatedAt    pgtype.Timestamptz `json:"createdAt"`
 }

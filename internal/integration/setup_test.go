@@ -52,7 +52,10 @@ func seedUser(t *testing.T, p *pgxpool.Pool) uuid.UUID {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	id := uuid.New()
+	id, err := auth.NewUserID()
+	if err != nil {
+		t.Fatalf("new user id: %v", err)
+	}
 	if _, err := p.Exec(context.Background(),
 		`INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3)`,
 		id, "test-"+id.String(), hash); err != nil {

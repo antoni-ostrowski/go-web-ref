@@ -31,6 +31,10 @@ func NewSessionManager(pool *pgxpool.Pool) *scs.SessionManager {
 	return sessions
 }
 
+func NewUserID() (uuid.UUID, error) {
+	return uuid.NewV7()
+}
+
 // HashPassword bcrypt-hashes password for storage. Never store plaintext.
 func HashPassword(password string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -80,8 +84,13 @@ func handleSignup(d handlers.Deps) http.HandlerFunc {
 			handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
 			return
 		}
+		id, err := NewUserID()
+		if err != nil {
+			handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
+			return
+		}
 		user, err := d.Queries.CreateUser(ctx, db.CreateUserParams{
-			ID: uuid.New(), Username: username, PasswordHash: hash,
+			ID: id, Username: username, PasswordHash: hash,
 		})
 		if err != nil {
 			var pgErr *pgconn.PgError
