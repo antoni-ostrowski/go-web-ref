@@ -1,6 +1,7 @@
-// Package handlertest holds test-only helpers shared by the integration
-// suite. Production code must never import it.
-package handlertest
+// Shared helpers for the integration suite (request driving, DB setup,
+// response assertions). Single-package suite, so they live here next to the
+// tests instead of a separate helpers package.
+package integration_test
 
 import (
 	"context"
@@ -13,8 +14,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/alexedwards/scs/v2"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -69,40 +68,10 @@ func Truncate(t *testing.T, p *pgxpool.Pool, tables ...string) {
 	}
 }
 
-// LoginAs signs in as userID through the real session middleware and
-// returns the session cookie. Stands in for unimplemented sign-in.
-func LoginAs(t *testing.T, sessions *scs.SessionManager, userID uuid.UUID) *http.Cookie {
-	t.Helper()
-	loginMux := http.NewServeMux()
-	loginMux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
-		sessions.Put(r.Context(), "user_id", userID.String())
-	})
-	rec := httptest.NewRecorder()
-	sessions.LoadAndSave(loginMux).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/login", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("fake login: status %d, body %q", rec.Code, rec.Body.String())
-	}
-	cookies := rec.Result().Cookies()
-	if len(cookies) == 0 {
-		t.Fatal("fake login: no session cookie set")
-	}
-	return cookies[0]
-}
-
 // Do sends one in-memory request through app. A non-nil form is sent as
-// urlencoded (what HTMX posts look like); cookie carries the session.
-func Do(t *testing.T, app http.Handler, method, target string, form url.Values, cookie *http.Cookie) *httptest.ResponseRecorder {
-	t.Helper()
-	return doReq(t, app, method, target, form, cookie, nil)
-}
-
-// DoHtmx is Do with HX-Request set, mimicking a real htmx-issued request.
-func DoHtmx(t *testing.T, app http.Handler, method, target string, form url.Values, cookie *http.Cookie) *httptest.ResponseRecorder {
-	t.Helper()
-	return doReq(t, app, method, target, form, cookie, map[string]string{"HX-Request": "true"})
-}
-
-func doReq(t *testing.T, app http.Handler, method, target string, form url.Values, cookie *http.Cookie, headers map[string]string) *httptest.ResponseRecorder {
+// urlencoded (what HTMX posts look like); cookie carries the session;
+// headers adds extra request headers (nil for none).
+func Do(t *testing.T, app http.Handler, method, target string, form url.Values, cookie *http.Cookie, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	var body io.Reader
 	if form != nil {
@@ -121,6 +90,12 @@ func doReq(t *testing.T, app http.Handler, method, target string, form url.Value
 	rec := httptest.NewRecorder()
 	app.ServeHTTP(rec, req)
 	return rec
+}
+
+// DoHtmx is Do with HX-Request set, mimicking a real htmx-issued request.
+func DoHtmx(t *testing.T, app http.Handler, method, target string, form url.Values, cookie *http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	return Do(t, app, method, target, form, cookie, map[string]string{"HX-Request": "true"})
 }
 
 // WantCode asserts the status, printing the body on mismatch.
