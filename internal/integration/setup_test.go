@@ -46,7 +46,7 @@ func login(t *testing.T, app http.Handler, q *db.Queries, user uuid.UUID) *http.
 	}
 	return cookies[0]
 }
-func seedUser(t *testing.T, p *pgxpool.Pool) uuid.UUID {
+func seedUser(t *testing.T, username string) uuid.UUID {
 	t.Helper()
 	hash, err := auth.HashPassword(testPassword)
 	if err != nil {
@@ -56,9 +56,12 @@ func seedUser(t *testing.T, p *pgxpool.Pool) uuid.UUID {
 	if err != nil {
 		t.Fatalf("new user id: %v", err)
 	}
-	if _, err := p.Exec(context.Background(),
+	if username == "" {
+		username = "test-" + id.String()
+	}
+	if _, err := testPool(t).Exec(context.Background(),
 		`INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3)`,
-		id, "test-"+id.String(), hash); err != nil {
+		id, username, hash); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 	return id
@@ -71,7 +74,7 @@ func setup(t *testing.T) (http.Handler, *db.Queries, *scs.SessionManager, uuid.U
 	t.Helper()
 	p := Pool(t, schemaFile)
 	Truncate(t, p, "todos", "sessions", "users")
-	user := seedUser(t, p)
+	user := seedUser(t, "")
 	q := db.New(p)
 	sessions := auth.NewSessionManager(p)
 	// No OTel SDK in tests: discard logs, noop tracer/meter (global defaults).

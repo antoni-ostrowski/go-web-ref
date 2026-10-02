@@ -15,6 +15,7 @@ import (
 	"go-htmx-todo/internal/handlers"
 	"go-htmx-todo/templates"
 
+	"github.com/a-h/templ"
 	"github.com/alexedwards/scs/pgxstore"
 	"github.com/alexedwards/scs/v2"
 	"github.com/google/uuid"
@@ -72,11 +73,11 @@ func handleSignup(d handlers.Deps) http.HandlerFunc {
 		username := strings.TrimSpace(r.FormValue("username"))
 		password := r.FormValue("password")
 		if username == "" {
-			renderSignup(w, r, d.Logger, "username cannot be empty", http.StatusUnprocessableEntity)
+			renderAuth(w, r, d.Logger, http.StatusUnprocessableEntity, templates.Signup("username cannot be empty"))
 			return
 		}
 		if len(password) < 8 {
-			renderSignup(w, r, d.Logger, "password must be at least 8 characters", http.StatusUnprocessableEntity)
+			renderAuth(w, r, d.Logger, http.StatusUnprocessableEntity, templates.Signup("password must be at least 8 characters"))
 			return
 		}
 		hash, err := HashPassword(password)
@@ -95,7 +96,7 @@ func handleSignup(d handlers.Deps) http.HandlerFunc {
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-				renderSignup(w, r, d.Logger, "username is taken", http.StatusConflict)
+				renderAuth(w, r, d.Logger, http.StatusConflict, templates.Signup("username is taken"))
 				return
 			}
 			handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
@@ -124,14 +125,14 @@ func handleSignin(d handlers.Deps) http.HandlerFunc {
 		user, err := d.Queries.GetUserByUsername(ctx, strings.TrimSpace(r.FormValue("username")))
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				renderSignin(w, r, d.Logger, "invalid username or password", http.StatusUnauthorized)
+				renderAuth(w, r, d.Logger, http.StatusUnauthorized, templates.Signin("invalid username or password"))
 				return
 			}
 			handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
 			return
 		}
 		if !CheckPassword(user.PasswordHash, r.FormValue("password")) {
-			renderSignin(w, r, d.Logger, "invalid username or password", http.StatusUnauthorized)
+			renderAuth(w, r, d.Logger, http.StatusUnauthorized, templates.Signin("invalid username or password"))
 			return
 		}
 		if err := login(d, r, user); err != nil {
@@ -166,16 +167,9 @@ func login(d handlers.Deps, r *http.Request, user db.User) error {
 	return nil
 }
 
-func renderSignup(w http.ResponseWriter, r *http.Request, logger *slog.Logger, msg string, code int) {
+func renderAuth(w http.ResponseWriter, r *http.Request, logger *slog.Logger, code int, page templ.Component) {
 	w.WriteHeader(code)
-	if err := templates.Signup(msg).Render(r.Context(), w); err != nil {
-		handlers.WriteError(w, r, logger, err, http.StatusInternalServerError)
-	}
-}
-
-func renderSignin(w http.ResponseWriter, r *http.Request, logger *slog.Logger, msg string, code int) {
-	w.WriteHeader(code)
-	if err := templates.Signin(msg).Render(r.Context(), w); err != nil {
+	if err := page.Render(r.Context(), w); err != nil {
 		handlers.WriteError(w, r, logger, err, http.StatusInternalServerError)
 	}
 }

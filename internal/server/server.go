@@ -47,7 +47,7 @@ func Run(ctx context.Context, cfg Config) error {
 	logger := slog.New(obs.NewLogHandler(cfg.Service))
 	slog.SetDefault(logger)
 	if err != nil {
-		logger.Warn("otel disabled", "reason", "OTEL_EXPORTER_OTLP_ENDPOINT not set")
+		logger.Warn("otel disabled", "reason", err)
 	}
 	defer func() {
 		if otelShutdown == nil {

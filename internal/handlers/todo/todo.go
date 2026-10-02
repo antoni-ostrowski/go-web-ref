@@ -22,8 +22,6 @@ func Register(mux *http.ServeMux, d handlers.Deps) {
 	handlers.Route(mux, "POST /todos", auth.RequireAuth(handleAdd(d), d))
 	handlers.Route(mux, "POST /todos/{id}/toggle", auth.RequireAuth(handleToggle(d), d))
 	handlers.Route(mux, "DELETE /todos/{id}", auth.RequireAuth(handleDelete(d), d))
-	handlers.Route(mux, "POST /todos/complete-all", auth.RequireAuth(handleCompleteAll(d), d))
-	handlers.Route(mux, "POST /todos/clear-completed", auth.RequireAuth(handleClearCompleted(d), d))
 }
 
 func handlePage(d handlers.Deps) auth.AuthedHandler {
@@ -119,64 +117,6 @@ func handleDelete(d handlers.Deps) auth.AuthedHandler {
 		ctx, span = d.Tel.Tracer.Start(r.Context(), "db.list")
 		defer span.End()
 		todos, err := d.Queries.ListTodos(ctx, a.UserID)
-		if err != nil {
-			handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
-			return
-		}
-		if err := templates.List(todos).Render(ctx, w); err != nil {
-			handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
-		}
-	}
-}
-
-func handleCompleteAll(d handlers.Deps) auth.AuthedHandler {
-	return func(w http.ResponseWriter, r *http.Request, a auth.AuthData) {
-		ctx := r.Context()
-		todos, err := d.Queries.ListTodos(ctx, a.UserID)
-		if err != nil {
-			handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
-			return
-		}
-		for _, t := range todos {
-			if t.Done {
-				continue
-			}
-			if err := d.Queries.UpdateTodo(ctx, db.UpdateTodoParams{
-				ID: t.ID, UserID: t.UserID, Title: t.Title, Done: true,
-			}); err != nil {
-				handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
-				return
-			}
-		}
-		todos, err = d.Queries.ListTodos(ctx, a.UserID)
-		if err != nil {
-			handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
-			return
-		}
-		if err := templates.List(todos).Render(ctx, w); err != nil {
-			handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
-		}
-	}
-}
-
-func handleClearCompleted(d handlers.Deps) auth.AuthedHandler {
-	return func(w http.ResponseWriter, r *http.Request, a auth.AuthData) {
-		ctx := r.Context()
-		todos, err := d.Queries.ListTodos(ctx, a.UserID)
-		if err != nil {
-			handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
-			return
-		}
-		for _, t := range todos {
-			if !t.Done {
-				continue
-			}
-			if err := d.Queries.DeleteTodo(ctx, db.DeleteTodoParams{ID: t.ID, UserID: a.UserID}); err != nil {
-				handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
-				return
-			}
-		}
-		todos, err = d.Queries.ListTodos(ctx, a.UserID)
 		if err != nil {
 			handlers.WriteError(w, r, d.Logger, err, http.StatusInternalServerError)
 			return

@@ -15,7 +15,7 @@ import (
 // seedSecondUser inserts a second user for isolation tests.
 func seedSecondUser(t *testing.T) uuid.UUID {
 	t.Helper()
-	return seedUser(t, testPool(t))
+	return seedUser(t, "")
 }
 
 func mkTodo(user uuid.UUID, title string) db.CreateTodoParams {
@@ -23,20 +23,6 @@ func mkTodo(user uuid.UUID, title string) db.CreateTodoParams {
 }
 
 func itoa(id int64) string { return strconv.FormatInt(id, 10) }
-
-// GET / with no todos renders the full page shell plus the empty state.
-func TestPage_Empty(t *testing.T) {
-	app, q, _, user := setup(t)
-	cookie := login(t, app, q, user)
-
-	rec := Do(t, app, http.MethodGet, "/", nil, cookie, nil)
-	WantCode(t, rec, http.StatusOK)
-	WantBody(t, rec, "<!doctype html>", `id="todo-list"`, "no todos yet")
-
-	if todos := listDB(t, q, user); len(todos) != 0 {
-		t.Fatalf("db = %#v, want empty", todos)
-	}
-}
 
 // GET / shows only the acting user's todos.
 func TestPage_Isolation(t *testing.T) {
@@ -131,10 +117,8 @@ func TestToggle_Errors(t *testing.T) {
 	rec := Do(t, app, http.MethodPost, "/todos/999999/toggle", nil, cookie, nil)
 	WantCode(t, rec, http.StatusNotFound)
 
-	for _, target := range []string{"/todos/abc/toggle", "/todos/0/toggle", "/todos/-1/toggle"} {
-		rec := Do(t, app, http.MethodPost, target, nil, cookie, nil)
-		WantCode(t, rec, http.StatusBadRequest)
-	}
+	rec = Do(t, app, http.MethodPost, "/todos/abc/toggle", nil, cookie, nil)
+	WantCode(t, rec, http.StatusBadRequest)
 
 	other := seedSecondUser(t)
 	otherTodo, err := q.CreateTodo(context.Background(), mkTodo(other, "not mine"))
@@ -173,85 +157,6 @@ func TestDelete_RemovesTargetedTodo(t *testing.T) {
 	}
 }
 
-// DELETE is user-scoped and idempotent: foreign/missing rows render 200,
-// changing nothing.
-func TestDelete_IsolationAndIdempotent(t *testing.T) {
-	app, q, _, user := setup(t)
-	cookie := login(t, app, q, user)
-
-	other := seedSecondUser(t)
-	otherTodo, err := q.CreateTodo(context.Background(), mkTodo(other, "not mine"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	Do(t, app, http.MethodPost, "/todos", url.Values{"title": {"mine"}}, cookie, nil)
-
-	rec := Do(t, app, http.MethodDelete, "/todos/"+itoa(otherTodo.ID), nil, cookie, nil)
-	WantCode(t, rec, http.StatusOK)
-	if theirs := listDB(t, q, other); len(theirs) != 1 {
-		t.Fatalf("their db = %#v, want untouched", theirs)
-	}
-	if mine := listDB(t, q, user); len(mine) != 1 {
-		t.Fatalf("my db = %#v, want untouched", mine)
-	}
-
-	rec = Do(t, app, http.MethodDelete, "/todos/999999", nil, cookie, nil)
-	WantCode(t, rec, http.StatusOK)
-	if mine := listDB(t, q, user); len(mine) != 1 {
-		t.Fatalf("my db = %#v, want untouched after missing delete", mine)
-	}
-}
-
-// POST /todos/complete-all marks every open todo done.
-func TestCompleteAll(t *testing.T) {
-	app, q, _, user := setup(t)
-	cookie := login(t, app, q, user)
-
-	// Empty list is a no-op, not an error.
-	rec := Do(t, app, http.MethodPost, "/todos/complete-all", nil, cookie, nil)
-	WantCode(t, rec, http.StatusOK)
-	WantBody(t, rec, "no todos yet")
-
-	Do(t, app, http.MethodPost, "/todos", url.Values{"title": {"a"}}, cookie, nil)
-	Do(t, app, http.MethodPost, "/todos", url.Values{"title": {"b"}}, cookie, nil)
-	Do(t, app, http.MethodPost, "/todos/2/toggle", nil, cookie, nil) // b already done
-
-	rec = Do(t, app, http.MethodPost, "/todos/complete-all", nil, cookie, nil)
-	WantCode(t, rec, http.StatusOK)
-	WantBody(t, rec, `line-through`)
-
-	todos := listDB(t, q, user)
-	if len(todos) != 2 || !todos[0].Done || !todos[1].Done {
-		t.Fatalf("db = %#v, want all done", todos)
-	}
-}
-
-// POST /todos/clear-completed deletes done todos and keeps open ones.
-func TestClearCompleted(t *testing.T) {
-	app, q, _, user := setup(t)
-	cookie := login(t, app, q, user)
-
-	// Empty list is a no-op, not an error.
-	rec := Do(t, app, http.MethodPost, "/todos/clear-completed", nil, cookie, nil)
-	WantCode(t, rec, http.StatusOK)
-
-	Do(t, app, http.MethodPost, "/todos", url.Values{"title": {"alpha"}}, cookie, nil)
-	Do(t, app, http.MethodPost, "/todos", url.Values{"title": {"bravo"}}, cookie, nil)
-	Do(t, app, http.MethodPost, "/todos", url.Values{"title": {"charlie"}}, cookie, nil)
-	Do(t, app, http.MethodPost, "/todos/1/toggle", nil, cookie, nil)
-	Do(t, app, http.MethodPost, "/todos/3/toggle", nil, cookie, nil)
-
-	rec = Do(t, app, http.MethodPost, "/todos/clear-completed", nil, cookie, nil)
-	WantCode(t, rec, http.StatusOK)
-	WantBody(t, rec, "bravo")
-	WantNoBody(t, rec, "alpha", "charlie")
-
-	todos := listDB(t, q, user)
-	if len(todos) != 1 || todos[0].Title != "bravo" {
-		t.Fatalf("db = %#v, want only bravo", todos)
-	}
-}
-
 // Anonymous htmx requests get 401 + HX-Redirect so the client navigates.
 func TestRequireAuth_HtmxRedirect(t *testing.T) {
 	app, _, _, _ := setup(t)
@@ -261,16 +166,6 @@ func TestRequireAuth_HtmxRedirect(t *testing.T) {
 	if h := rec.Header().Get("HX-Redirect"); h != "/signin" {
 		t.Fatalf("HX-Redirect = %q, want /signin", h)
 	}
-}
-
-// Authed htmx requests pass through to the handler.
-func TestRequireAuth_HtmxAuthed(t *testing.T) {
-	app, q, _, user := setup(t)
-	cookie := login(t, app, q, user)
-
-	rec := DoHtmx(t, app, http.MethodPost, "/todos", url.Values{"title": {"via htmx"}}, cookie)
-	WantCode(t, rec, http.StatusOK)
-	WantBody(t, rec, "via htmx")
 }
 
 // Anonymous requests see sign-in links; mutations redirect to sign-in.

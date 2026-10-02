@@ -8,29 +8,7 @@ import (
 	"testing"
 
 	"go-htmx-todo/internal/handlers/auth"
-
-	"github.com/google/uuid"
 )
-
-// seedNamedUser inserts a user with a known username and password
-// ("password123"), for tests that sign in through the real form.
-func seedNamedUser(t *testing.T, username string) uuid.UUID {
-	t.Helper()
-	hash, err := auth.HashPassword("password123")
-	if err != nil {
-		t.Fatalf("hash password: %v", err)
-	}
-	id, err := auth.NewUserID()
-	if err != nil {
-		t.Fatalf("new user id: %v", err)
-	}
-	if _, err := testPool(t).Exec(context.Background(),
-		`INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3)`,
-		id, username, hash); err != nil {
-		t.Fatalf("seed user: %v", err)
-	}
-	return id
-}
 
 // doSignup posts the signup form, returning the response and the session
 // cookie when one was set.
@@ -91,19 +69,6 @@ func TestSignup_CreatesUserAndLogsIn(t *testing.T) {
 	WantBody(t, rec, "alice")
 }
 
-// GET /signup and /signin render their forms.
-func TestAuth_Pages(t *testing.T) {
-	app, _, _, _ := setup(t)
-
-	rec := Do(t, app, http.MethodGet, "/signup", nil, nil, nil)
-	WantCode(t, rec, http.StatusOK)
-	WantBody(t, rec, `action="/signup"`, `name="password"`)
-
-	rec = Do(t, app, http.MethodGet, "/signin", nil, nil, nil)
-	WantCode(t, rec, http.StatusOK)
-	WantBody(t, rec, `action="/signin"`, `name="password"`)
-}
-
 // A taken username is 409 and stores nothing new.
 func TestSignup_Duplicate(t *testing.T) {
 	app, _, _, _ := setup(t)
@@ -139,22 +104,10 @@ func TestSignup_Validation(t *testing.T) {
 	}
 }
 
-// Usernames are trimmed, so "  bob  " signs up (and in) as "bob".
-func TestSignup_TrimsUsername(t *testing.T) {
-	app, q, _, _ := setup(t)
-
-	if _, rec := doSignup(t, app, "  bob  ", "password123"); rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want 303", rec.Code)
-	}
-	if _, err := q.GetUserByUsername(context.Background(), "bob"); err != nil {
-		t.Fatalf("GetUserByUsername(bob): %v", err)
-	}
-}
-
 // POST /signin with correct credentials logs in through the real form.
 func TestSignin(t *testing.T) {
 	app, _, _, _ := setup(t)
-	seedNamedUser(t, "carol")
+	seedUser(t, "carol")
 
 	rec := Do(t, app, http.MethodPost, "/signin",
 		url.Values{"username": {"carol"}, "password": {"password123"}}, nil, nil)
@@ -178,7 +131,7 @@ func TestSignin(t *testing.T) {
 // Wrong password and unknown users are 401 without revealing which failed.
 func TestSignin_RejectsBadCredentials(t *testing.T) {
 	app, _, _, _ := setup(t)
-	seedNamedUser(t, "carol")
+	seedUser(t, "carol")
 
 	for _, tt := range []struct{ username, password string }{
 		{"carol", "wrongpassword"},

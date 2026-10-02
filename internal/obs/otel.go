@@ -3,9 +3,12 @@ package obs
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
@@ -37,7 +40,20 @@ func SetupOTelSDK(ctx context.Context, serviceName string) (func(context.Context
 	traceEndpoint, traceInsecure, traceOK := endpointFor("TRACES")
 	meterEndpoint, meterInsecure, meterOK := endpointFor("METRICS")
 	logEndpoint, logInsecure, logOK := endpointFor("LOGS")
+	wanted := traceOK || meterOK || logOK
+	if traceOK && !probeTarget(traceEndpoint) {
+		traceOK = false
+	}
+	if meterOK && !probeTarget(meterEndpoint) {
+		meterOK = false
+	}
+	if logOK && !probeTarget(logEndpoint) {
+		logOK = false
+	}
 	if !traceOK && !meterOK && !logOK {
+		if wanted {
+			return nil, fmt.Errorf("obs: OTLP collector unreachable, telemetry disabled: %w", ErrNoEndpoint)
+		}
 		return nil, ErrNoEndpoint
 	}
 
@@ -151,6 +167,18 @@ func splitTarget(raw string) (endpoint string, insecure bool) {
 		return u.Host, u.Scheme == "http"
 	}
 	return raw, true // bare host:port, assume local http
+}
+
+// probeTarget reports whether endpoint (host:port) accepts TCP. A refused
+// or timed-out dial means no collector is listening, so the signal stays
+// noop instead of creating an exporter that retries and spams logs.
+func probeTarget(endpoint string) bool {
+	conn, err := net.DialTimeout("tcp", endpoint, time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 func newTracerProvider(ctx context.Context, res *resource.Resource, endpoint string, insecure bool) (*trace.TracerProvider, error) {
